@@ -953,6 +953,49 @@ body {
   animation: slideUp .4s cubic-bezier(.4,0,.2,1) both;
 }
 
+/* ── Delegation Rows ── */
+.delegation-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  gap: 8px;
+}
+
+.delegation-row:last-child { border: none; }
+
+.delegation-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 1;
+}
+
+.delegation-name {
+  font-size: .68rem;
+  font-weight: 600;
+  color: var(--text);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.delegation-amount {
+  font-family: var(--mono);
+  font-size: .65rem;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.delegation-rewards {
+  font-family: var(--mono);
+  font-size: .58rem;
+  color: var(--green);
+}
+
 /* ── Responsive ── */
 @media (max-width: 480px) {
   .phishing-meta { font-size: .58rem; }

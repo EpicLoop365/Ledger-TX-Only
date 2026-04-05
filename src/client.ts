@@ -148,3 +148,196 @@ export async function broadcastTx(
     };
   }
 }
+
+// ---------------------------------------------------------------------------
+// Staking REST API
+// ---------------------------------------------------------------------------
+
+const TESTNET_REST = "https://full-node.testnet-1.coreum.dev:1317";
+const MAINNET_REST = "https://full-node.mainnet-1.coreum.dev:1317";
+
+function getRestBase(network: "testnet" | "mainnet"): string {
+  return network === "mainnet" ? MAINNET_REST : TESTNET_REST;
+}
+
+export interface ValidatorInfo {
+  operatorAddress: string;
+  moniker: string;
+  commission: string; // e.g. "0.10" = 10%
+  tokens: string; // total bonded tokens in micro
+  status: string; // BOND_STATUS_BONDED etc
+  jailed: boolean;
+}
+
+export interface DelegationInfo {
+  validatorAddress: string;
+  validatorMoniker: string;
+  shares: string;
+  balance: string; // micro amount
+  rewards: string; // micro amount of pending rewards
+}
+
+/**
+ * Fetch bonded validators from the REST API.
+ * Returns validators sorted by tokens descending.
+ */
+export async function fetchValidators(
+  network: "testnet" | "mainnet" = "testnet"
+): Promise<ValidatorInfo[]> {
+  const base = getRestBase(network);
+  const url = `${base}/cosmos/staking/v1beta1/validators?status=BOND_STATUS_BONDED&pagination.limit=100`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error(`fetchValidators: HTTP ${res.status}`);
+      return [];
+    }
+
+    const data = await res.json();
+    const validators: ValidatorInfo[] = (data.validators || []).map(
+      (v: any) => ({
+        operatorAddress: v.operator_address,
+        moniker: v.description?.moniker || "Unknown",
+        commission: v.commission?.commission_rates?.rate || "0",
+        tokens: v.tokens || "0",
+        status: v.status || "",
+        jailed: v.jailed || false,
+      })
+    );
+
+    // Sort by tokens descending
+    validators.sort(
+      (a, b) => parseFloat(b.tokens) - parseFloat(a.tokens)
+    );
+
+    return validators;
+  } catch (err) {
+    console.error("fetchValidators error:", err);
+    return [];
+  }
+}
+
+/**
+ * Fetch delegations for an address.
+ * Pass a pre-fetched validators array for efficient moniker lookup.
+ */
+export async function fetchDelegations(
+  address: string,
+  network: "testnet" | "mainnet" = "testnet",
+  validators: ValidatorInfo[] = []
+): Promise<DelegationInfo[]> {
+  const base = getRestBase(network);
+  const url = `${base}/cosmos/staking/v1beta1/delegations/${address}`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error(`fetchDelegations: HTTP ${res.status}`);
+      return [];
+    }
+
+    const data = await res.json();
+    const monikerMap = new Map<string, string>();
+    for (const v of validators) {
+      monikerMap.set(v.operatorAddress, v.moniker);
+    }
+
+    const delegations: DelegationInfo[] = (
+      data.delegation_responses || []
+    ).map((entry: any) => ({
+      validatorAddress: entry.delegation?.validator_address || "",
+      validatorMoniker:
+        monikerMap.get(entry.delegation?.validator_address || "") || "Unknown",
+      shares: entry.delegation?.shares || "0",
+      balance: entry.balance?.amount || "0",
+      rewards: "0", // filled in by fetchStakingInfo
+    }));
+
+    return delegations;
+  } catch (err) {
+    console.error("fetchDelegations error:", err);
+    return [];
+  }
+}
+
+/**
+ * Fetch pending staking rewards for a delegator.
+ * Returns a Map of validator_address → reward amount, plus totalRewards.
+ */
+export async function fetchRewards(
+  address: string,
+  network: "testnet" | "mainnet" = "testnet"
+): Promise<{ rewardsMap: Map<string, string>; totalRewards: string }> {
+  const base = getRestBase(network);
+  const url = `${base}/cosmos/distribution/v1beta1/delegators/${address}/rewards`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.error(`fetchRewards: HTTP ${res.status}`);
+      return { rewardsMap: new Map(), totalRewards: "0" };
+    }
+
+    const data = await res.json();
+    const rewardsMap = new Map<string, string>();
+
+    for (const entry of data.rewards || []) {
+      const valAddr: string = entry.validator_address || "";
+      let total = 0;
+      for (const coin of entry.reward || []) {
+        total += parseFloat(coin.amount || "0");
+      }
+      rewardsMap.set(valAddr, Math.floor(total).toString());
+    }
+
+    // Total rewards across all validators
+    let totalNum = 0;
+    for (const coin of data.total || []) {
+      totalNum += parseFloat(coin.amount || "0");
+    }
+    const totalRewards = Math.floor(totalNum).toString();
+
+    return { rewardsMap, totalRewards };
+  } catch (err) {
+    console.error("fetchRewards error:", err);
+    return { rewardsMap: new Map(), totalRewards: "0" };
+  }
+}
+
+/**
+ * Combined staking info: validators, delegations with rewards merged, total rewards.
+ */
+export async function fetchStakingInfo(
+  address: string,
+  network: "testnet" | "mainnet" = "testnet"
+): Promise<{
+  validators: ValidatorInfo[];
+  delegations: DelegationInfo[];
+  totalRewards: string;
+}> {
+  try {
+    const validators = await fetchValidators(network);
+    const [delegations, rewardsData] = await Promise.all([
+      fetchDelegations(address, network, validators),
+      fetchRewards(address, network),
+    ]);
+
+    // Merge rewards into delegations
+    for (const del of delegations) {
+      const reward = rewardsData.rewardsMap.get(del.validatorAddress);
+      if (reward) {
+        del.rewards = reward;
+      }
+    }
+
+    return {
+      validators,
+      delegations,
+      totalRewards: rewardsData.totalRewards,
+    };
+  } catch (err) {
+    console.error("fetchStakingInfo error:", err);
+    return { validators: [], delegations: [], totalRewards: "0" };
+  }
+}

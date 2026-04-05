@@ -1,8 +1,10 @@
 import { useState, useCallback, useEffect } from "react";
 import { connectLedger, signWithLedger, disconnectLedger, type LedgerConnection } from "./ledger";
-import { fetchBalance, getAccountInfo, getChainId, broadcastTx, getDenom, getPrefix, type BalanceInfo } from "./client";
-import { buildAminoSignDoc, assembleTxBytes, toMicroAmount } from "./txBuilder";
+import { fetchBalance, getAccountInfo, getChainId, broadcastTx, getDenom, getPrefix, fetchStakingInfo, type BalanceInfo, type ValidatorInfo, type DelegationInfo } from "./client";
+import { buildAminoSignDoc, assembleTxBytes, toMicroAmount, buildDelegateSignDoc, buildUndelegateSignDoc, buildClaimRewardsSignDoc, assembleStakingTxBytes } from "./txBuilder";
 import { checkCompliance, type ComplianceResult } from "./compliance";
+
+type AppTab = "send" | "stake";
 
 type Status = { type: "pass" | "fail" | "info" | "warn"; message: string } | null;
 type Network = "testnet" | "mainnet";
@@ -130,6 +132,18 @@ function App() {
   // Step timeline state
   const [txStep, setTxStep] = useState<TxStep>("idle");
   const [failedAtStep, setFailedAtStep] = useState<TxStep | undefined>();
+
+  // Tab state
+  const [activeTab, setActiveTab] = useState<AppTab>("send");
+
+  // Staking state
+  const [validators, setValidators] = useState<ValidatorInfo[]>([]);
+  const [delegations, setDelegations] = useState<DelegationInfo[]>([]);
+  const [totalRewards, setTotalRewards] = useState("0");
+  const [selectedValidator, setSelectedValidator] = useState<string>("");
+  const [stakeAmount, setStakeAmount] = useState("");
+  const [stakeAction, setStakeAction] = useState<"delegate" | "undelegate">("delegate");
+  const [stakingLoading, setStakingLoading] = useState(false);
 
   // Debug state
   const [debugLog, setDebugLog] = useState<string[]>([]);
@@ -310,6 +324,138 @@ function App() {
       setStatus({ type: "fail", message: `Failed to fetch balance: ${(err as Error).message}` });
     }
   }, [ledger, network]);
+
+  // ── Load Staking Info ──
+  const loadStakingInfo = useCallback(async () => {
+    if (!ledger) return;
+    setStakingLoading(true);
+    try {
+      const info = await fetchStakingInfo(ledger.address, network);
+      setValidators(info.validators);
+      setDelegations(info.delegations);
+      setTotalRewards(info.totalRewards);
+    } catch (err) {
+      console.error("Failed to load staking info:", err);
+    }
+    setStakingLoading(false);
+  }, [ledger, network]);
+
+  // Load staking info when switching to stake tab
+  useEffect(() => {
+    if (activeTab === "stake" && ledger) {
+      loadStakingInfo();
+    }
+  }, [activeTab, ledger, loadStakingInfo]);
+
+  // ── Stake / Unstake ──
+  const handleStake = useCallback(async () => {
+    if (!ledger || !selectedValidator || !stakeAmount) return;
+
+    setSigning(true);
+    setTxStep("sign");
+    setFailedAtStep(undefined);
+    setStatus({ type: "info", message: `Preparing ${stakeAction}...` });
+
+    try {
+      const microAmount = toMicroAmount(parseFloat(stakeAmount));
+      const denom = getDenom(network);
+      const { accountNumber, sequence } = await getAccountInfo(ledger.address, network);
+      const chainId = await getChainId(network);
+
+      const buildFn = stakeAction === "delegate" ? buildDelegateSignDoc : buildUndelegateSignDoc;
+      const { signDoc, signDocString } = buildFn({
+        delegatorAddress: ledger.address,
+        validatorAddress: selectedValidator,
+        amount: microAmount,
+        denom,
+        chainId,
+        accountNumber,
+        sequence,
+        memo: `${stakeAction === "delegate" ? "Staked" : "Unstaked"} via TX Web Wallet`,
+      });
+
+      setStatus({ type: "warn", message: "Please confirm on your Ledger device..." });
+      const signature = await signWithLedger(ledger.app, signDocString, ledger.prefix);
+
+      setTxStep("broadcast");
+      setStatus({ type: "info", message: "Broadcasting..." });
+      const txBytes = assembleStakingTxBytes(signDoc, signature, ledger.publicKey);
+      const result = await broadcastTx(txBytes, network);
+
+      if (result.success) {
+        setTxHash(result.txHash);
+        setTxStep("done");
+        setStatus({ type: "pass", message: `${stakeAction === "delegate" ? "Stake" : "Unstake"} successful!` });
+        setStakeAmount("");
+        setTimeout(() => { handleRefreshBalance(); loadStakingInfo(); }, 3000);
+      } else {
+        setFailedAtStep("broadcast");
+        setTxStep("failed");
+        setStatus({ type: "fail", message: `Failed: ${result.error}` });
+      }
+    } catch (err: any) {
+      setFailedAtStep("sign");
+      setTxStep("failed");
+      const msg = err.message || String(err);
+      if (msg.includes("rejected") || msg.includes("0x6985")) {
+        setStatus({ type: "fail", message: "Rejected on Ledger device" });
+      } else {
+        setStatus({ type: "fail", message: `Failed: ${msg}` });
+      }
+    }
+    setSigning(false);
+  }, [ledger, selectedValidator, stakeAmount, stakeAction, network, handleRefreshBalance, loadStakingInfo]);
+
+  // ── Claim Rewards ──
+  const handleClaimRewards = useCallback(async (validatorAddress: string) => {
+    if (!ledger) return;
+
+    setSigning(true);
+    setTxStep("sign");
+    setFailedAtStep(undefined);
+    setStatus({ type: "info", message: "Preparing claim..." });
+
+    try {
+      const denom = getDenom(network);
+      const { accountNumber, sequence } = await getAccountInfo(ledger.address, network);
+      const chainId = await getChainId(network);
+
+      const { signDoc, signDocString } = buildClaimRewardsSignDoc({
+        delegatorAddress: ledger.address,
+        validatorAddress,
+        chainId,
+        accountNumber,
+        sequence,
+        denom,
+        memo: "Claimed via TX Web Wallet",
+      });
+
+      setStatus({ type: "warn", message: "Please confirm on your Ledger device..." });
+      const signature = await signWithLedger(ledger.app, signDocString, ledger.prefix);
+
+      setTxStep("broadcast");
+      setStatus({ type: "info", message: "Broadcasting..." });
+      const txBytes = assembleStakingTxBytes(signDoc, signature, ledger.publicKey);
+      const result = await broadcastTx(txBytes, network);
+
+      if (result.success) {
+        setTxHash(result.txHash);
+        setTxStep("done");
+        setStatus({ type: "pass", message: "Rewards claimed!" });
+        setTimeout(() => { handleRefreshBalance(); loadStakingInfo(); }, 3000);
+      } else {
+        setFailedAtStep("broadcast");
+        setTxStep("failed");
+        setStatus({ type: "fail", message: `Failed: ${result.error}` });
+      }
+    } catch (err: any) {
+      setFailedAtStep("sign");
+      setTxStep("failed");
+      const msg = err.message || String(err);
+      setStatus({ type: "fail", message: msg.includes("rejected") ? "Rejected on Ledger" : `Failed: ${msg}` });
+    }
+    setSigning(false);
+  }, [ledger, network, handleRefreshBalance, loadStakingInfo]);
 
   // ── Run Compliance Check ──
   const handleCompliance = useCallback(() => {
@@ -652,8 +798,32 @@ function App() {
         </div>
       )}
 
-      {/* ── Transaction Card ── */}
+      {/* ── Tab Toggle ── */}
       {ledger && (
+        <div className="card" style={{ padding: "8px 10px", marginBottom: 8 }}>
+          <div className="network-toggle">
+            <button
+              className={`toggle-btn ${activeTab === "send" ? "active" : ""}`}
+              onClick={() => setActiveTab("send")}
+              disabled={signing}
+              style={activeTab === "send" ? { background: profile.accentColor } : {}}
+            >
+              Send
+            </button>
+            <button
+              className={`toggle-btn ${activeTab === "stake" ? "active" : ""}`}
+              onClick={() => setActiveTab("stake")}
+              disabled={signing}
+              style={activeTab === "stake" ? { background: profile.accentColor } : {}}
+            >
+              Stake
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ── Send Tab ── */}
+      {ledger && activeTab === "send" && (
         <div className="card card-enter">
           <div className="section-label">Send Transaction</div>
 
@@ -700,14 +870,12 @@ function App() {
             Review Transaction
           </button>
 
-          {/* Compliance Result */}
           {complianceResult && complianceResult.status !== "PASS" && (
             <div className="status fail">
               <strong>{complianceResult.status}</strong> &mdash; {complianceResult.reason}
             </div>
           )}
 
-          {/* Transaction Agreement */}
           {showAgreement && !txHash && (
             <div className="agreement-card animate-slide-up">
               <div className="agreement-header">Transaction Agreement</div>
@@ -732,10 +900,6 @@ function App() {
                   <span className="agreement-label">Network</span>
                   <span className="agreement-value">{network}</span>
                 </div>
-                <div className="agreement-row">
-                  <span className="agreement-label">Memo</span>
-                  <span className="agreement-value">Sent via TX Web Wallet</span>
-                </div>
               </div>
 
               <label className="agreement-check">
@@ -751,37 +915,175 @@ function App() {
                 className={`btn btn-primary ${signing ? "btn-signing" : ""}`}
                 onClick={handleSignAndSend}
                 disabled={!agreementChecked || signing}
-                style={{ marginTop: 12, background: agreementChecked && !signing ? `linear-gradient(135deg, ${profile.accentColor}, #059669)` : undefined }}
+                style={{ marginTop: 8, background: agreementChecked && !signing ? `linear-gradient(135deg, ${profile.accentColor}, #059669)` : undefined }}
               >
-                {signing ? (
-                  <><span className="spinner" /> Signing on Ledger...</>
-                ) : (
-                  "Confirm & Sign on Ledger"
-                )}
+                {signing ? <><span className="spinner" /> Signing...</> : "Confirm & Sign on Ledger"}
               </button>
             </div>
           )}
 
-          {/* TX Result */}
           {txHash && (
             <div className="tx-result animate-success">
-              <div style={{ color: "var(--green)", fontWeight: 700, marginBottom: 8 }}>
-                Transaction Successful
-              </div>
+              <div style={{ color: "var(--green)", fontWeight: 700, marginBottom: 4 }}>Transaction Successful</div>
               <div>
-                <span style={{ color: "var(--muted)" }}>TX Hash:</span>{" "}
+                <span style={{ color: "var(--muted)" }}>Hash:</span>{" "}
                 <a href={`${explorerBase}?tx=${txHash}`} target="_blank" rel="noopener noreferrer">
-                  {txHash.slice(0, 16)}...{txHash.slice(-8)}
+                  {txHash.slice(0, 12)}...{txHash.slice(-6)}
                 </a>
-              </div>
-              <div>
-                <span style={{ color: "var(--muted)" }}>Amount:</span> {amount} CORE
-              </div>
-              <div>
-                <span style={{ color: "var(--muted)" }}>To:</span> {recipient.slice(0, 20)}...
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* ── Stake Tab ── */}
+      {ledger && activeTab === "stake" && (
+        <div className="card card-enter">
+          {/* My Delegations */}
+          {delegations.length > 0 && (
+            <div style={{ marginBottom: 12 }}>
+              <div className="section-label">My Delegations</div>
+              {delegations.map((d) => {
+                const balDisplay = (parseInt(d.balance) / 1_000_000).toFixed(2);
+                const rewDisplay = (parseInt(d.rewards) / 1_000_000).toFixed(4);
+                const hasRewards = parseInt(d.rewards) > 0;
+                return (
+                  <div key={d.validatorAddress} className="delegation-row">
+                    <div className="delegation-info">
+                      <span className="delegation-name">{d.validatorMoniker}</span>
+                      <span className="delegation-amount">{balDisplay} CORE</span>
+                      {hasRewards && (
+                        <span className="delegation-rewards">+{rewDisplay} pending</span>
+                      )}
+                    </div>
+                    {hasRewards && (
+                      <button
+                        className="btn-sm"
+                        onClick={() => handleClaimRewards(d.validatorAddress)}
+                        disabled={signing}
+                        style={{ color: "var(--green)", borderColor: "rgba(52,211,153,.3)" }}
+                      >
+                        Claim
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+              {parseInt(totalRewards) > 0 && (
+                <div style={{ marginTop: 6, fontSize: ".62rem", fontFamily: "var(--mono)", color: "var(--green)", textAlign: "right" }}>
+                  Total pending: {(parseInt(totalRewards) / 1_000_000).toFixed(4)} CORE
+                </div>
+              )}
+            </div>
+          )}
+
+          {delegations.length === 0 && !stakingLoading && (
+            <div style={{ fontSize: ".72rem", color: "var(--muted)", marginBottom: 12, textAlign: "center" }}>
+              No active delegations
+            </div>
+          )}
+
+          {stakingLoading && (
+            <div style={{ fontSize: ".72rem", color: "var(--muted)", marginBottom: 12, textAlign: "center" }}>
+              <span className="spinner" style={{ width: 12, height: 12 }} /> Loading staking info...
+            </div>
+          )}
+
+          {/* Stake / Unstake */}
+          <div className="section-label" style={{ marginTop: 4 }}>
+            {stakeAction === "delegate" ? "Stake" : "Unstake"} CORE
+          </div>
+
+          <div className="network-toggle" style={{ marginBottom: 8 }}>
+            <button
+              className={`toggle-btn ${stakeAction === "delegate" ? "active" : ""}`}
+              onClick={() => setStakeAction("delegate")}
+              style={stakeAction === "delegate" ? { background: "var(--green)" } : {}}
+            >
+              Stake
+            </button>
+            <button
+              className={`toggle-btn ${stakeAction === "undelegate" ? "active" : ""}`}
+              onClick={() => setStakeAction("undelegate")}
+              style={stakeAction === "undelegate" ? { background: "var(--yellow)" } : {}}
+            >
+              Unstake
+            </button>
+          </div>
+
+          <div className="input-group">
+            <label>Validator</label>
+            <select
+              value={selectedValidator}
+              onChange={(e) => setSelectedValidator(e.target.value)}
+              style={{
+                width: "100%",
+                padding: "8px 10px",
+                borderRadius: 7,
+                border: "1px solid var(--border)",
+                background: "var(--bg)",
+                color: "var(--text)",
+                fontFamily: "var(--mono)",
+                fontSize: ".72rem",
+                outline: "none",
+              }}
+            >
+              <option value="">Select a validator...</option>
+              {validators.map((v) => (
+                <option key={v.operatorAddress} value={v.operatorAddress}>
+                  {v.moniker} ({(parseFloat(v.commission) * 100).toFixed(0)}% fee)
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="input-group">
+            <label>Amount (CORE)</label>
+            <input
+              type="number"
+              placeholder="0.00"
+              min="0"
+              step="0.01"
+              value={stakeAmount}
+              onChange={(e) => setStakeAmount(e.target.value)}
+            />
+          </div>
+
+          <button
+            className="btn btn-primary"
+            onClick={handleStake}
+            disabled={!selectedValidator || !stakeAmount || signing}
+            style={{ background: stakeAction === "delegate"
+              ? `linear-gradient(135deg, var(--green), #059669)`
+              : `linear-gradient(135deg, var(--yellow), #d97706)` }}
+          >
+            {signing ? (
+              <><span className="spinner" /> Signing...</>
+            ) : (
+              stakeAction === "delegate" ? "Stake on Ledger" : "Unstake on Ledger"
+            )}
+          </button>
+
+          {txHash && (
+            <div className="tx-result animate-success" style={{ marginTop: 8 }}>
+              <div style={{ color: "var(--green)", fontWeight: 700, marginBottom: 4 }}>Success</div>
+              <div>
+                <span style={{ color: "var(--muted)" }}>Hash:</span>{" "}
+                <a href={`${explorerBase}?tx=${txHash}`} target="_blank" rel="noopener noreferrer">
+                  {txHash.slice(0, 12)}...{txHash.slice(-6)}
+                </a>
+              </div>
+            </div>
+          )}
+
+          <button
+            className="btn-sm"
+            onClick={loadStakingInfo}
+            disabled={stakingLoading}
+            style={{ marginTop: 8, width: "100%", textAlign: "center" }}
+          >
+            {stakingLoading ? "Loading..." : "Refresh Staking Info"}
+          </button>
         </div>
       )}
 
