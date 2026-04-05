@@ -10,13 +10,14 @@
   },
   "dependencies": {
     "@cosmjs/amino": "^0.32.4",
-    "@cosmjs/encoding": "^0.32.4",
     "@cosmjs/crypto": "^0.32.4",
-    "@cosmjs/stargate": "^0.32.4",
-    "@cosmjs/proto-signing": "^0.32.4",
+    "@cosmjs/encoding": "^0.32.4",
     "@cosmjs/math": "^0.32.4",
+    "@cosmjs/proto-signing": "^0.32.4",
+    "@cosmjs/stargate": "^0.32.4",
     "@ledgerhq/hw-app-cosmos": "^6.30.4",
     "@ledgerhq/hw-transport-webusb": "^6.29.4",
+    "buffer": "^6.0.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
