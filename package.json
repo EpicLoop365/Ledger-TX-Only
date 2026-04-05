@@ -17,9 +17,11 @@
     "@cosmjs/stargate": "^0.32.4",
     "@ledgerhq/hw-app-cosmos": "^6.30.4",
     "@ledgerhq/hw-transport-webusb": "^6.29.4",
+    "@zondax/ledger-cosmos-js": "^4.0.1",
     "buffer": "^6.0.3",
     "react": "^18.3.1",
-    "react-dom": "^18.3.1"
+    "react-dom": "^18.3.1",
+    "rollup-plugin-polyfill-node": "^0.13.0"
   },
   "devDependencies": {
     "@types/react": "^18.3.12",

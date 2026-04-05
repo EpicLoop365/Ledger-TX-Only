@@ -5,6 +5,7 @@
   --bg2: #0d0d16;
   --bg3: #14141f;
   --accent: #818cf8;
+  --user-accent: #818cf8;
   --green: #34d399;
   --red: #ef4444;
   --yellow: #fbbf24;
@@ -35,30 +36,183 @@ body {
   max-width: 520px;
 }
 
-/* Header */
+/* ── Domain Warning ── */
+.domain-warning {
+  background: var(--red);
+  color: #fff;
+  padding: 12px 16px;
+  border-radius: 10px;
+  font-family: var(--mono);
+  font-size: .75rem;
+  font-weight: 700;
+  text-align: center;
+  margin-bottom: 16px;
+  animation: flash 1s ease-in-out infinite;
+}
+
+@keyframes flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .7; }
+}
+
+/* ── Header ── */
 .header {
   text-align: center;
-  margin-bottom: 32px;
+  margin-bottom: 24px;
 }
 
 .header h1 {
-  font-size: 1.6rem;
+  font-size: 1.8rem;
+  font-weight: 800;
+  letter-spacing: -.03em;
+  margin-bottom: 4px;
+}
+
+.header .subtitle {
+  font-family: var(--mono);
+  font-size: .68rem;
+  color: var(--muted);
+  letter-spacing: .04em;
+  margin-bottom: 16px;
+}
+
+/* ── Anti-Phishing Banner ── */
+.phishing-banner {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px 20px;
+  text-align: left;
+}
+
+.phishing-greeting {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.phishing-phrase {
+  font-family: var(--mono);
+  font-size: .78rem;
+  color: var(--text);
+  opacity: .9;
+  margin-bottom: 10px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-radius: 8px;
+  border-left: 3px solid var(--user-accent, var(--accent));
+}
+
+.phishing-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: .65rem;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.phishing-domain {
+  margin-top: 8px;
+  font-family: var(--mono);
+  font-size: .7rem;
+  font-weight: 600;
+  color: var(--green);
+}
+
+/* ── Setup Wizard ── */
+.setup-container {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.setup-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  padding: 40px 32px;
+  max-width: 440px;
+  width: 100%;
+  text-align: center;
+}
+
+.setup-icon {
+  font-size: 3rem;
+  margin-bottom: 16px;
+}
+
+.setup-title {
+  font-size: 1.8rem;
   font-weight: 800;
   letter-spacing: -.03em;
   background: linear-gradient(135deg, #818cf8 0%, #34d399 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
 }
 
-.header .subtitle {
+.setup-subtitle {
+  color: var(--muted);
+  font-size: .85rem;
+  margin-bottom: 24px;
+}
+
+.setup-desc {
+  color: var(--muted);
+  font-size: .8rem;
+  line-height: 1.6;
+  margin-bottom: 24px;
+  text-align: left;
+}
+
+.setup-step-label {
   font-family: var(--mono);
+  font-size: .68rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: 16px;
+}
+
+.setup-hint {
   font-size: .72rem;
   color: var(--muted);
-  letter-spacing: .04em;
+  margin: 8px 0 16px;
+  text-align: left;
+  line-height: 1.5;
 }
 
-/* Card */
+/* Color Picker */
+.color-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin: 16px 0;
+}
+
+.color-swatch {
+  width: 100%;
+  aspect-ratio: 1;
+  border-radius: 12px;
+  border: 3px solid transparent;
+  cursor: pointer;
+  transition: all .2s;
+}
+
+.color-swatch:hover {
+  transform: scale(1.1);
+}
+
+.color-swatch.selected {
+  border-color: #fff;
+  box-shadow: 0 0 16px currentColor;
+  transform: scale(1.1);
+}
+
+/* ── Card ── */
 .card {
   background: var(--bg2);
   border: 1px solid var(--border);
@@ -77,7 +231,7 @@ body {
   margin-bottom: 10px;
 }
 
-/* Network Toggle */
+/* ── Network Toggle ── */
 .network-toggle {
   display: flex;
   gap: 0;
@@ -106,7 +260,6 @@ body {
 }
 
 .toggle-btn.active {
-  background: var(--accent);
   color: #fff;
   box-shadow: 0 0 16px rgba(129,140,248,.25);
 }
@@ -116,7 +269,7 @@ body {
   color: var(--text);
 }
 
-/* Buttons */
+/* ── Buttons ── */
 .btn {
   display: block;
   width: 100%;
@@ -170,7 +323,23 @@ body {
   background: rgba(129,140,248,.08);
 }
 
-/* Wallet info */
+.btn-link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: .68rem;
+  cursor: pointer;
+  text-decoration: underline;
+  opacity: .7;
+  transition: opacity .2s;
+}
+
+.btn-link:hover {
+  opacity: 1;
+}
+
+/* ── Wallet Info ── */
 .wallet-info {
   margin-top: 16px;
 }
@@ -199,9 +368,25 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-/* Form inputs */
+.live-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 6px currentColor; }
+  50% { opacity: .4; box-shadow: none; }
+}
+
+/* ── Form Inputs ── */
 .input-group {
   margin-bottom: 12px;
 }
@@ -227,7 +412,7 @@ body {
 }
 
 .input-group input:focus {
-  border-color: var(--accent);
+  border-color: var(--user-accent, var(--accent));
 }
 
 .input-group input::placeholder {
@@ -235,7 +420,88 @@ body {
   opacity: .5;
 }
 
-/* Status messages */
+/* ── Transaction Agreement ── */
+.agreement-card {
+  margin-top: 12px;
+  background: var(--bg3);
+  border: 1px solid rgba(251,191,36,.15);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.agreement-header {
+  font-family: var(--mono);
+  font-size: .8rem;
+  font-weight: 700;
+  color: var(--yellow);
+  text-transform: uppercase;
+  letter-spacing: .06em;
+  margin-bottom: 16px;
+  text-align: center;
+}
+
+.agreement-body {
+  margin-bottom: 16px;
+}
+
+.agreement-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: .75rem;
+}
+
+.agreement-row:last-child { border: none; }
+
+.agreement-label {
+  color: var(--muted);
+  font-size: .68rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.agreement-value {
+  font-family: var(--mono);
+  font-size: .72rem;
+  color: var(--text);
+  text-align: right;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agreement-value.highlight {
+  color: var(--green);
+  font-weight: 700;
+  font-size: .85rem;
+}
+
+.agreement-check {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 12px;
+  background: var(--bg);
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  cursor: pointer;
+  font-size: .72rem;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.agreement-check input[type="checkbox"] {
+  margin-top: 2px;
+  accent-color: var(--green);
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+/* ── Status Messages ── */
 .status {
   padding: 12px 16px;
   border-radius: 10px;
@@ -268,7 +534,7 @@ body {
   color: var(--yellow);
 }
 
-/* TX Result */
+/* ── TX Result ── */
 .tx-result {
   margin-top: 12px;
   padding: 16px;
@@ -288,14 +554,14 @@ body {
   text-decoration: underline;
 }
 
-/* Divider */
+/* ── Divider ── */
 .divider {
   height: 1px;
   background: var(--border);
   margin: 16px 0;
 }
 
-/* Spinner */
+/* ── Spinner ── */
 .spinner {
   display: inline-block;
   width: 14px;
@@ -312,7 +578,53 @@ body {
   to { transform: rotate(360deg); }
 }
 
-/* Footer */
+/* ── Debug Panel ── */
+.debug-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: .72rem;
+}
+
+.debug-label {
+  color: var(--muted);
+  font-size: .65rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.debug-value {
+  font-family: var(--mono);
+  font-size: .68rem;
+  color: var(--text);
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: right;
+}
+
+.debug-log {
+  margin-top: 10px;
+  padding: 10px;
+  background: var(--bg);
+  border-radius: 8px;
+  max-height: 200px;
+  overflow-y: auto;
+  font-family: var(--mono);
+  font-size: .62rem;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.debug-log div {
+  border-bottom: 1px solid var(--border);
+  padding: 2px 0;
+}
+
+/* ── Footer ── */
 .footer {
   text-align: center;
   margin-top: 24px;
@@ -324,4 +636,11 @@ body {
 .footer a {
   color: var(--accent);
   text-decoration: none;
+}
+
+/* ── Responsive ── */
+@media (max-width: 480px) {
+  .phishing-meta { font-size: .58rem; }
+  .agreement-value { max-width: 180px; }
+  .wallet-row .value { max-width: 200px; }
 }

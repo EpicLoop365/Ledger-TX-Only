@@ -3,20 +3,49 @@
  *
  * Connects via WebUSB, derives Coreum address using the Cosmos
  * HD path, and signs transactions with the Ledger device.
+ * Uses @zondax/ledger-cosmos-js for address derivation,
+ * raw APDU for signing (Cosmos app v2.34+ compatible).
  */
 
 import TransportWebUSB from "@ledgerhq/hw-transport-webusb";
-import CosmosApp from "@ledgerhq/hw-app-cosmos";
+import CosmosApp from "@zondax/ledger-cosmos-js";
 
-// Cosmos HD path for Coreum: m/44'/990'/0'/0/0
-// 990 = Coreum coin type
-const COREUM_HD_PATH = "m/44'/990'/0'/0/0";
+const COREUM_PATH = "m/44'/118'/0'/0/0";
+const CLA = 0x55;
+const INS_SIGN = 0x02;
+const CHUNK_SIZE = 250;
 
 export interface LedgerConnection {
   transport: any;
-  app: CosmosApp;
+  app: any;
   address: string;
   publicKey: Uint8Array;
+  prefix: string;
+}
+
+/**
+ * Serialize BIP44 path to bytes (5 elements, 4 bytes each = 20 bytes).
+ */
+function serializePath(path: string): Buffer {
+  const parts = path.replace("m/", "").split("/").map((p) => {
+    const hardened = p.endsWith("'");
+    const num = parseInt(p.replace("'", ""), 10);
+    return hardened ? (num | 0x80000000) >>> 0 : num;
+  });
+
+  const buf = Buffer.alloc(20);
+  parts.forEach((p, i) => buf.writeUInt32LE(p, i * 4));
+  return buf;
+}
+
+/**
+ * Serialize HRP (human readable part) for Cosmos app.
+ */
+function serializeHRP(hrp: string): Buffer {
+  const buf = Buffer.alloc(1 + hrp.length);
+  buf.writeUInt8(hrp.length, 0);
+  buf.write(hrp, 1);
+  return buf;
 }
 
 /**
@@ -25,62 +54,139 @@ export interface LedgerConnection {
 export async function connectLedger(
   prefix: string = "testcore"
 ): Promise<LedgerConnection> {
-  // Request USB device access
   const transport = await TransportWebUSB.create();
-
-  // Open Cosmos app on Ledger
   const app = new CosmosApp(transport as any);
 
-  // Get public key + address from device
-  const response = await app.getAddress(COREUM_HD_PATH, prefix);
-
-  const pubKeyHex = (response as any).pubKey || (response as any).publicKey || "";
-  const address = (response as any).bech32Address || (response as any).address || "";
-
-  if (!pubKeyHex) {
-    throw new Error("Failed to get public key from Ledger. Is the Cosmos app open?");
+  // Check app version
+  try {
+    const versionResponse = await transport.send(CLA, 0x00, 0, 0);
+    const major = versionResponse[1];
+    const minor = versionResponse[2];
+    const patch = versionResponse[3];
+    console.log(`[Ledger] Cosmos app version: ${major}.${minor}.${patch}`);
+  } catch (e) {
+    console.log("[Ledger] Version check failed:", e);
   }
 
-  // Convert hex public key to Uint8Array
-  const publicKey = hexToBytes(pubKeyHex);
+  // Get address
+  let response: any;
+  try {
+    response = await app.getAddressAndPubKey(COREUM_PATH, prefix);
+    console.log("[Ledger] Address response keys:", Object.keys(response));
+  } catch (e: any) {
+    console.log(`[Ledger] getAddress with "${prefix}" failed:`, e.message);
+    response = await app.getAddressAndPubKey(COREUM_PATH, "cosmos");
+    console.log("[Ledger] Fallback address response keys:", Object.keys(response));
+  }
 
-  return {
-    transport,
-    app,
-    address,
-    publicKey,
-  };
+  const returnCode = response.return_code ?? response.returnCode;
+  if (returnCode && returnCode !== 0x9000) {
+    throw new Error(`Ledger: ${response.error_message || "UNKNOWN_ERROR"} (0x${returnCode.toString(16)})`);
+  }
+
+  const address = response.bech32_address ?? response.address ?? "";
+  const pk = response.compressed_pk ?? response.compressedPk ?? response.publicKey;
+
+  // Ensure we get the raw bytes correctly regardless of Buffer type
+  let publicKey: Uint8Array;
+  if (pk instanceof Uint8Array) {
+    publicKey = new Uint8Array(pk);  // Copy to avoid offset issues
+  } else if (pk?.buffer) {
+    publicKey = new Uint8Array(pk.buffer.slice(pk.byteOffset, pk.byteOffset + pk.byteLength));
+  } else {
+    publicKey = new Uint8Array();
+  }
+  console.log("[Ledger] PubKey hex:", Array.from(publicKey).map((b: number) => b.toString(16).padStart(2, "0")).join(""));
+  console.log("[Ledger] PubKey length:", publicKey.length, "first byte:", publicKey[0]);
+
+  if (!address) {
+    throw new Error("Failed to get address from Ledger. Is the Cosmos app open?");
+  }
+
+  return { transport, app, address, publicKey, prefix };
 }
 
 /**
- * Sign a transaction using the Ledger device.
- * Returns the signature bytes.
+ * Sign a transaction using raw APDU commands.
+ * This bypasses the Zondax wrapper which hangs on Cosmos app v2.34+.
  */
 export async function signWithLedger(
-  app: CosmosApp,
-  signDoc: string
+  app: any,
+  signDoc: string,
+  hrp: string = "core"
 ): Promise<Uint8Array> {
-  const response = await app.sign(COREUM_HD_PATH, signDoc);
+  const transport = app.transport;
 
-  const sigHex = (response as any).signature;
-  if (!sigHex) {
-    throw new Error("Transaction was rejected on the Ledger device");
+  // Prepare message buffer: HRP + path + message
+  const hrpBuf = serializeHRP(hrp);
+  const pathBuf = serializePath(COREUM_PATH);
+  const messageBuf = Buffer.from(signDoc);
+
+  // Split into chunks
+  // Try path-only first chunk (old Cosmos app sign protocol)
+  const chunks: Buffer[] = [];
+
+  // First chunk: path only (no HRP for sign — HRP is only for getAddress)
+  chunks.push(pathBuf);
+
+  // Remaining chunks: message data
+  for (let i = 0; i < messageBuf.length; i += CHUNK_SIZE) {
+    chunks.push(messageBuf.subarray(i, i + CHUNK_SIZE));
   }
 
-  // The signature from Ledger is DER-encoded, convert to fixed 64-byte format
-  const sigBytes = hexToBytes(sigHex);
-  return derToFixed(sigBytes);
-}
+  console.log(`[Ledger] Signing: ${chunks.length} chunks, message length: ${messageBuf.length}`);
 
-/**
- * Convert hex string to Uint8Array.
- */
-function hexToBytes(hex: string): Uint8Array {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < hex.length; i += 2) {
-    bytes[i / 2] = parseInt(hex.substring(i, i + 2), 16);
+  let response: Buffer;
+
+  for (let i = 0; i < chunks.length; i++) {
+    const isFirst = i === 0;
+    const isLast = i === chunks.length - 1;
+
+    // P1: 0x00 = init, 0x01 = add, 0x02 = last
+    const p1 = isFirst ? 0x00 : isLast ? 0x02 : 0x01;
+    // P2: 0x00 = JSON (Amino), 0x01 = Textual
+    const p2 = 0x00;
+
+    console.log(`[Ledger] Sending chunk ${i + 1}/${chunks.length} (p1=${p1}, size=${chunks[i].length})`);
+
+    try {
+      response = await transport.send(CLA, INS_SIGN, p1, p2, chunks[i]);
+      console.log(`[Ledger] Chunk ${i + 1} response: ${response.length} bytes, SW: 0x${response.slice(-2).toString("hex")}`);
+    } catch (e: any) {
+      console.log(`[Ledger] Chunk ${i + 1} error:`, e.message);
+      if (e.statusCode === 0x6986 || e.message?.includes("0x6986")) {
+        throw new Error("Transaction rejected on Ledger device");
+      }
+      throw new Error(`Ledger sign failed at chunk ${i + 1}: ${e.message}`);
+    }
   }
-  return bytes;
+
+  // Extract signature from last response (remove 2-byte status code)
+  const sigBytes = response!.slice(0, response!.length - 2);
+  console.log(`[Ledger] Signature: ${sigBytes.length} bytes`);
+
+  if (sigBytes.length === 0) {
+    throw new Error("Empty signature returned from Ledger");
+  }
+
+  // Log raw signature for debugging
+  const rawSig = new Uint8Array(sigBytes);
+  console.log("[Ledger] Raw sig hex:", Array.from(rawSig).map(b => b.toString(16).padStart(2, "0")).join(""));
+  console.log("[Ledger] First byte:", rawSig[0], "= 0x" + rawSig[0].toString(16));
+
+  // Check if DER-encoded (starts with 0x30) or already fixed 64-byte
+  if (rawSig.length === 64) {
+    console.log("[Ledger] Signature is already 64 bytes (fixed format)");
+    return rawSig;
+  }
+
+  if (rawSig[0] === 0x30) {
+    console.log("[Ledger] Signature is DER-encoded, converting to fixed 64-byte");
+    return derToFixed(rawSig);
+  }
+
+  console.log("[Ledger] Unknown signature format, attempting DER decode");
+  return derToFixed(rawSig);
 }
 
 /**
@@ -89,13 +195,12 @@ function hexToBytes(hex: string): Uint8Array {
 function derToFixed(derSig: Uint8Array): Uint8Array {
   const fixed = new Uint8Array(64);
 
-  // DER format: 0x30 <len> 0x02 <rLen> <r> 0x02 <sLen> <s>
   let offset = 2; // skip 0x30 and total length
 
   // Parse r
   offset++; // skip 0x02
   const rLen = derSig[offset++];
-  const rStart = rLen === 33 ? offset + 1 : offset; // skip leading 0x00 if 33 bytes
+  const rStart = rLen === 33 ? offset + 1 : offset;
   const rEnd = offset + rLen;
   const rBytes = derSig.slice(rStart, rEnd);
   fixed.set(rBytes, 32 - rBytes.length);

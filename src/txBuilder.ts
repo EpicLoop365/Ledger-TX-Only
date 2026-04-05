@@ -7,9 +7,10 @@
 
 import { makeSignDoc, type StdFee, type AminoMsg } from "@cosmjs/amino";
 import { TxRaw } from "cosmjs-types/cosmos/tx/v1beta1/tx";
-import { makeAuthInfoBytes, Registry } from "@cosmjs/proto-signing";
+import { makeAuthInfoBytes, Registry, encodePubkey } from "@cosmjs/proto-signing";
 import { Int53 } from "@cosmjs/math";
 import { MsgSend } from "cosmjs-types/cosmos/bank/v1beta1/tx";
+import { encodeSecp256k1Pubkey } from "@cosmjs/amino";
 
 // Register MsgSend
 const registry = new Registry();
@@ -95,14 +96,14 @@ export function assembleTxBytes(
   // Encode TxBody
   const bodyBytes = registry.encode(txBody);
 
-  // Build AuthInfo
+  // Build AuthInfo using proper CosmJS encoding
+  const aminoPubkey = encodeSecp256k1Pubkey(publicKey);
+  const pubkey = encodePubkey(aminoPubkey);
+
   const authInfoBytes = makeAuthInfoBytes(
     [
       {
-        pubkey: {
-          typeUrl: "/cosmos.crypto.secp256k1.PubKey",
-          value: new Uint8Array([10, publicKey.length, ...publicKey]),
-        },
+        pubkey,
         sequence: Int53.fromString(signDoc.sequence).toNumber(),
       },
     ],
@@ -110,7 +111,7 @@ export function assembleTxBytes(
     Int53.fromString(signDoc.fee.gas).toNumber(),
     undefined, // feeGranter
     undefined, // feePayer
-    1 // signMode: SIGN_MODE_LEGACY_AMINO_JSON
+    127 // signMode: SIGN_MODE_LEGACY_AMINO_JSON (127, not 1)
   );
 
   const txRaw = TxRaw.fromPartial({
