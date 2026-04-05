@@ -26,7 +26,7 @@ body {
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding: 40px 20px;
+  padding: 16px 20px;
   background-image: radial-gradient(rgba(129,140,248,.03) 1px, transparent 1px);
   background-size: 32px 32px;
 }
@@ -58,66 +58,82 @@ body {
 /* ── Header ── */
 .header {
   text-align: center;
-  margin-bottom: 24px;
+  margin-bottom: 10px;
 }
 
 .header h1 {
-  font-size: 1.8rem;
+  font-size: 1.5rem;
   font-weight: 800;
   letter-spacing: -.03em;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .header .subtitle {
   font-family: var(--mono);
-  font-size: .68rem;
+  font-size: .62rem;
   color: var(--muted);
   letter-spacing: .04em;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 
 /* ── Anti-Phishing Banner ── */
 .phishing-banner {
   background: var(--bg2);
   border: 1px solid var(--border);
-  border-radius: 12px;
-  padding: 16px 20px;
+  border-radius: 10px;
+  padding: 10px 14px;
   text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.phishing-left {
+  flex: 1;
+  min-width: 0;
 }
 
 .phishing-greeting {
-  font-size: 1.05rem;
+  font-size: .85rem;
   font-weight: 700;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .phishing-phrase {
   font-family: var(--mono);
-  font-size: .78rem;
+  font-size: .68rem;
   color: var(--text);
   opacity: .9;
-  margin-bottom: 10px;
-  padding: 8px 12px;
+  padding: 4px 8px;
   background: var(--bg);
-  border-radius: 8px;
+  border-radius: 6px;
   border-left: 3px solid var(--user-accent, var(--accent));
+}
+
+.phishing-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  flex-shrink: 0;
 }
 
 .phishing-meta {
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  font-size: .65rem;
+  gap: 1px;
+  font-size: .58rem;
   font-family: var(--mono);
   color: var(--muted);
+  text-align: right;
 }
 
 .phishing-domain {
-  margin-top: 8px;
   font-family: var(--mono);
-  font-size: .7rem;
+  font-size: .62rem;
   font-weight: 600;
   color: var(--green);
+  text-align: right;
 }
 
 /* ── Setup Wizard ── */
@@ -216,19 +232,19 @@ body {
 .card {
   background: var(--bg2);
   border: 1px solid var(--border);
-  border-radius: 16px;
-  padding: 28px;
-  margin-bottom: 16px;
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin-bottom: 10px;
 }
 
 /* Section label */
 .section-label {
-  font-size: .68rem;
+  font-size: .62rem;
   font-weight: 600;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: .08em;
-  margin-bottom: 10px;
+  margin-bottom: 8px;
 }
 
 /* ── Network Toggle ── */
@@ -242,12 +258,12 @@ body {
 
 .toggle-btn {
   flex: 1;
-  padding: 10px 16px;
+  padding: 8px 14px;
   border: none;
   background: var(--bg);
   color: var(--muted);
   font-family: var(--mono);
-  font-size: .75rem;
+  font-size: .72rem;
   font-weight: 600;
   cursor: pointer;
   transition: all .2s;
@@ -273,11 +289,11 @@ body {
 .btn {
   display: block;
   width: 100%;
-  padding: 14px 24px;
+  padding: 11px 20px;
   border: none;
-  border-radius: 12px;
+  border-radius: 10px;
   font-family: var(--mono);
-  font-size: .82rem;
+  font-size: .78rem;
   font-weight: 700;
   cursor: pointer;
   transition: all .2s;
@@ -341,16 +357,16 @@ body {
 
 /* ── Wallet Info ── */
 .wallet-info {
-  margin-top: 16px;
+  margin-top: 8px;
 }
 
 .wallet-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 0;
+  padding: 5px 0;
   border-bottom: 1px solid var(--border);
-  font-size: .78rem;
+  font-size: .74rem;
 }
 
 .wallet-row:last-child { border: none; }
@@ -373,6 +389,88 @@ body {
   gap: 6px;
 }
 
+/* ── Compact Connected Bar ── */
+.connected-bar {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 16px;
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.connected-bar-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.connected-bar-item {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: .68rem;
+  font-family: var(--mono);
+}
+
+.connected-bar-item .cb-label {
+  color: var(--muted);
+  font-size: .58rem;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.connected-bar-item .cb-value {
+  color: var(--text);
+  font-weight: 600;
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.connected-bar-item .cb-value.green {
+  color: var(--green);
+}
+
+.connected-bar-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.btn-sm {
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: .58rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .2s;
+}
+
+.btn-sm:hover {
+  background: var(--bg3);
+  color: var(--text);
+}
+
+.btn-sm.danger {
+  border-color: rgba(239,68,68,.3);
+  color: var(--red);
+}
+
+.btn-sm.danger:hover {
+  background: rgba(239,68,68,.08);
+}
+
 .live-dot {
   width: 8px;
   height: 8px;
@@ -388,20 +486,20 @@ body {
 
 /* ── Form Inputs ── */
 .input-group {
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .input-group label {
   display: block;
-  font-size: .68rem;
+  font-size: .62rem;
   color: var(--muted);
-  margin-bottom: 4px;
+  margin-bottom: 3px;
 }
 
 .input-group input {
   width: 100%;
-  padding: 10px 12px;
-  border-radius: 8px;
+  padding: 8px 10px;
+  border-radius: 7px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
@@ -422,49 +520,49 @@ body {
 
 /* ── Transaction Agreement ── */
 .agreement-card {
-  margin-top: 12px;
+  margin-top: 8px;
   background: var(--bg3);
   border: 1px solid rgba(251,191,36,.15);
-  border-radius: 12px;
-  padding: 20px;
+  border-radius: 10px;
+  padding: 12px 14px;
 }
 
 .agreement-header {
   font-family: var(--mono);
-  font-size: .8rem;
+  font-size: .7rem;
   font-weight: 700;
   color: var(--yellow);
   text-transform: uppercase;
   letter-spacing: .06em;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
   text-align: center;
 }
 
 .agreement-body {
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 
 .agreement-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px 0;
+  padding: 4px 0;
   border-bottom: 1px solid var(--border);
-  font-size: .75rem;
+  font-size: .7rem;
 }
 
 .agreement-row:last-child { border: none; }
 
 .agreement-label {
   color: var(--muted);
-  font-size: .68rem;
+  font-size: .6rem;
   text-transform: uppercase;
   letter-spacing: .04em;
 }
 
 .agreement-value {
   font-family: var(--mono);
-  font-size: .72rem;
+  font-size: .65rem;
   color: var(--text);
   text-align: right;
   max-width: 260px;
@@ -476,38 +574,37 @@ body {
 .agreement-value.highlight {
   color: var(--green);
   font-weight: 700;
-  font-size: .85rem;
+  font-size: .78rem;
 }
 
 .agreement-check {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
-  padding: 12px;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
   background: var(--bg);
-  border-radius: 8px;
+  border-radius: 6px;
   border: 1px solid var(--border);
   cursor: pointer;
-  font-size: .72rem;
+  font-size: .65rem;
   color: var(--text);
-  line-height: 1.5;
+  line-height: 1.4;
 }
 
 .agreement-check input[type="checkbox"] {
-  margin-top: 2px;
   accent-color: var(--green);
-  width: 16px;
-  height: 16px;
+  width: 14px;
+  height: 14px;
   flex-shrink: 0;
 }
 
 /* ── Status Messages ── */
 .status {
-  padding: 12px 16px;
-  border-radius: 10px;
-  font-size: .78rem;
-  margin-top: 12px;
-  line-height: 1.5;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: .72rem;
+  margin-top: 8px;
+  line-height: 1.4;
 }
 
 .status.pass {
@@ -627,8 +724,8 @@ body {
 /* ── Footer ── */
 .footer {
   text-align: center;
-  margin-top: 24px;
-  font-size: .65rem;
+  margin-top: 12px;
+  font-size: .58rem;
   color: var(--muted);
   font-family: var(--mono);
 }
@@ -638,9 +735,231 @@ body {
   text-decoration: none;
 }
 
+/* ── Step Timeline ── */
+.step-timeline {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 10px 8px;
+  margin-bottom: 10px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  position: relative;
+  overflow: hidden;
+}
+
+.step-timeline::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at center, rgba(129,140,248,.04) 0%, transparent 70%);
+  pointer-events: none;
+}
+
+.step-item {
+  display: flex;
+  align-items: center;
+  gap: 0;
+  position: relative;
+  z-index: 1;
+}
+
+.step-node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 50px;
+}
+
+.step-circle {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: .65rem;
+  font-weight: 700;
+  border: 2px solid var(--border);
+  background: var(--bg);
+  color: var(--muted);
+  transition: all .4s cubic-bezier(.4,0,.2,1);
+  position: relative;
+}
+
+.step-circle.active {
+  border-color: var(--user-accent, var(--accent));
+  color: var(--user-accent, var(--accent));
+  background: rgba(129,140,248,.1);
+  box-shadow: 0 0 16px rgba(129,140,248,.3), 0 0 32px rgba(129,140,248,.1);
+  animation: stepGlow 2s ease-in-out infinite;
+}
+
+.step-circle.complete {
+  border-color: var(--green);
+  background: var(--green);
+  color: #fff;
+  box-shadow: 0 0 12px rgba(52,211,153,.3);
+}
+
+.step-circle.failed {
+  border-color: var(--red);
+  background: rgba(239,68,68,.15);
+  color: var(--red);
+  box-shadow: 0 0 12px rgba(239,68,68,.3);
+}
+
+@keyframes stepGlow {
+  0%, 100% { box-shadow: 0 0 16px rgba(129,140,248,.3), 0 0 32px rgba(129,140,248,.1); }
+  50% { box-shadow: 0 0 24px rgba(129,140,248,.5), 0 0 48px rgba(129,140,248,.15); }
+}
+
+.step-label {
+  font-family: var(--mono);
+  font-size: .5rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  transition: color .4s;
+  white-space: nowrap;
+}
+
+.step-label.active {
+  color: var(--user-accent, var(--accent));
+}
+
+.step-label.complete {
+  color: var(--green);
+}
+
+.step-connector {
+  width: 24px;
+  height: 2px;
+  background: var(--border);
+  transition: all .4s cubic-bezier(.4,0,.2,1);
+  position: relative;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.step-connector.active {
+  background: linear-gradient(90deg, var(--green), var(--user-accent, var(--accent)));
+  box-shadow: 0 0 8px rgba(52,211,153,.3);
+}
+
+.step-connector.complete {
+  background: var(--green);
+  box-shadow: 0 0 8px rgba(52,211,153,.2);
+}
+
+/* Checkmark icon for complete steps */
+.step-check {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+}
+
+/* ── Slide-in Animations ── */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(.92); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+.animate-slide-up {
+  animation: slideUp .4s cubic-bezier(.4,0,.2,1) both;
+}
+
+.animate-slide-down {
+  animation: slideDown .35s cubic-bezier(.4,0,.2,1) both;
+}
+
+.animate-fade-in {
+  animation: fadeIn .4s ease both;
+}
+
+.animate-scale-in {
+  animation: scaleIn .35s cubic-bezier(.4,0,.2,1) both;
+}
+
+/* ── Connect Button Pulse ── */
+.btn-connect-pulse {
+  position: relative;
+  overflow: visible;
+}
+
+.btn-connect-pulse::after {
+  content: '';
+  position: absolute;
+  inset: -4px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, var(--user-accent, var(--accent)), var(--green));
+  opacity: 0;
+  z-index: -1;
+  animation: connectPulse 2.5s ease-in-out infinite;
+}
+
+@keyframes connectPulse {
+  0%, 100% { opacity: 0; transform: scale(1); }
+  50% { opacity: .15; transform: scale(1.02); }
+}
+
+/* ── Success Burst ── */
+@keyframes successBurst {
+  0% { box-shadow: 0 0 0 0 rgba(52,211,153,.4); }
+  50% { box-shadow: 0 0 40px 8px rgba(52,211,153,.2); }
+  100% { box-shadow: 0 0 0 0 rgba(52,211,153,0); }
+}
+
+.tx-result.animate-success {
+  animation: scaleIn .35s cubic-bezier(.4,0,.2,1) both, successBurst 1.2s ease-out .2s both;
+  border: 1px solid rgba(52,211,153,.25);
+}
+
+/* ── Signing Shimmer ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.btn-signing {
+  background: linear-gradient(90deg, var(--bg3) 25%, rgba(251,191,36,.12) 50%, var(--bg3) 75%) !important;
+  background-size: 200% 100% !important;
+  animation: shimmer 2s linear infinite !important;
+  color: var(--yellow) !important;
+  border: 1px solid rgba(251,191,36,.2) !important;
+}
+
+/* ── Card entrance ── */
+.card-enter {
+  animation: slideUp .4s cubic-bezier(.4,0,.2,1) both;
+}
+
 /* ── Responsive ── */
 @media (max-width: 480px) {
   .phishing-meta { font-size: .58rem; }
   .agreement-value { max-width: 180px; }
   .wallet-row .value { max-width: 200px; }
+  .step-connector { width: 12px; }
+  .step-node { min-width: 44px; }
+  .step-circle { width: 26px; height: 26px; font-size: .62rem; }
+  .step-label { font-size: .48rem; }
 }

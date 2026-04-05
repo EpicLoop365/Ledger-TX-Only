@@ -7,6 +7,64 @@ import { checkCompliance, type ComplianceResult } from "./compliance";
 type Status = { type: "pass" | "fail" | "info" | "warn"; message: string } | null;
 type Network = "testnet" | "mainnet";
 
+// Transaction flow steps
+type TxStep = "idle" | "connect" | "review" | "sign" | "broadcast" | "done" | "failed";
+const STEPS: { key: TxStep; label: string; icon: string }[] = [
+  { key: "connect", label: "Connect", icon: "1" },
+  { key: "review", label: "Review", icon: "2" },
+  { key: "sign", label: "Sign", icon: "3" },
+  { key: "broadcast", label: "Broadcast", icon: "4" },
+  { key: "done", label: "Done", icon: "5" },
+];
+
+function getStepIndex(step: TxStep): number {
+  return STEPS.findIndex((s) => s.key === step);
+}
+
+function StepTimeline({ currentStep, failedAt }: { currentStep: TxStep; failedAt?: TxStep }) {
+  const currentIdx = getStepIndex(currentStep);
+  const failedIdx = failedAt ? getStepIndex(failedAt) : -1;
+  const isFailed = currentStep === "failed";
+  const isDone = currentStep === "done";
+
+  return (
+    <div className="step-timeline">
+      {STEPS.map((step, idx) => {
+        const isComplete = isDone || (!isFailed && currentIdx > idx);
+        const isActive = currentIdx === idx && !isFailed && !isDone;
+        const isFailedStep = isFailed && idx === failedIdx;
+        const showConnector = idx < STEPS.length - 1;
+
+        return (
+          <div className="step-item" key={step.key}>
+            <div className="step-node">
+              <div
+                className={`step-circle ${isComplete ? "complete" : ""} ${isActive ? "active" : ""} ${isFailedStep ? "failed" : ""}`}
+              >
+                {isComplete ? (
+                  <svg className="step-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+                    <polyline points="20 6 9 17 4 12" />
+                  </svg>
+                ) : isFailedStep ? (
+                  "!"
+                ) : (
+                  step.icon
+                )}
+              </div>
+              <span className={`step-label ${isComplete ? "complete" : ""} ${isActive ? "active" : ""}`}>
+                {step.label}
+              </span>
+            </div>
+            {showConnector && (
+              <div className={`step-connector ${isComplete ? "complete" : ""} ${isActive ? "active" : ""}`} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // Anti-phishing profile stored in localStorage
 interface UserProfile {
   name: string;
@@ -69,6 +127,10 @@ function App() {
   const [showAgreement, setShowAgreement] = useState(false);
   const [agreementChecked, setAgreementChecked] = useState(false);
 
+  // Step timeline state
+  const [txStep, setTxStep] = useState<TxStep>("idle");
+  const [failedAtStep, setFailedAtStep] = useState<TxStep | undefined>();
+
   // Debug state
   const [debugLog, setDebugLog] = useState<string[]>([]);
   const [usbDevices, setUsbDevices] = useState<string>("checking...");
@@ -128,6 +190,8 @@ function App() {
   // ── Connect Ledger ──
   const handleConnect = useCallback(async () => {
     setConnecting(true);
+    setTxStep("connect");
+    setFailedAtStep(undefined);
     log("Connect clicked — requesting USB...");
     setStatus({ type: "info", message: "Requesting Ledger connection... Open the Cosmos app on your device." });
 
@@ -151,10 +215,13 @@ function App() {
         setProfile(updated);
       }
 
+      setTxStep("review");
       setStatus({ type: "pass", message: "Ledger connected successfully" });
     } catch (err) {
       const msg = (err as Error).message;
       log(`ERROR: ${msg}`);
+      setFailedAtStep("connect");
+      setTxStep("failed");
       if (msg.includes("denied") || msg.includes("NotAllowedError")) {
         setStatus({ type: "fail", message: "USB access denied. Click Connect and select your Ledger device." });
       } else if (msg.includes("No device selected")) {
@@ -214,6 +281,7 @@ function App() {
       setTxHash(null);
     }
     setNetwork(newNetwork);
+    setTxStep("idle");
     setStatus({ type: "info", message: `Switched to ${newNetwork}. Connect your Ledger to continue.` });
   }, [network, ledger]);
 
@@ -228,6 +296,7 @@ function App() {
       setTxHash(null);
       setShowAgreement(false);
       setAgreementChecked(false);
+      setTxStep("idle");
     }
   }, [ledger]);
 
@@ -258,6 +327,7 @@ function App() {
     if (result.status === "PASS") {
       setStatus({ type: "pass", message: "Compliance check passed." });
       setShowAgreement(true);
+      setTxStep("review");
     } else {
       setStatus({ type: "fail", message: `Compliance check failed: ${result.reason}` });
     }
@@ -268,6 +338,8 @@ function App() {
     if (!ledger || !complianceResult || complianceResult.status !== "PASS" || !agreementChecked) return;
 
     setSigning(true);
+    setTxStep("sign");
+    setFailedAtStep(undefined);
     setStatus({ type: "info", message: "Preparing transaction..." });
 
     try {
@@ -299,6 +371,7 @@ function App() {
       const signature = await signWithLedger(ledger.app, signDocString, ledger.prefix);
       console.log("[TX] Signature received, assembling tx bytes...");
 
+      setTxStep("broadcast");
       setStatus({ type: "info", message: "Broadcasting transaction..." });
       try {
         const txBytes = assembleTxBytes(signDoc, signature, ledger.publicKey);
@@ -309,19 +382,26 @@ function App() {
 
         if (result.success) {
           setTxHash(result.txHash);
+          setTxStep("done");
           setStatus({ type: "pass", message: "Transaction broadcast successfully!" });
           setShowAgreement(false);
           setTimeout(() => handleRefreshBalance(), 3000);
         } else {
+          setFailedAtStep("broadcast");
+          setTxStep("failed");
           setStatus({ type: "fail", message: `Broadcast failed: ${result.error}` });
         }
       } catch (assembleErr: any) {
         console.error("[TX] Assembly/broadcast error:", assembleErr);
+        setFailedAtStep("broadcast");
+        setTxStep("failed");
         setStatus({ type: "fail", message: `TX assembly failed: ${assembleErr.message}` });
       }
     } catch (err: any) {
       console.error("[TX] Sign error:", err);
       const msg = err.message || String(err);
+      setFailedAtStep("sign");
+      setTxStep("failed");
       if (msg.includes("rejected") || msg.includes("denied") || msg.includes("0x6985")) {
         setStatus({ type: "fail", message: "Transaction rejected on Ledger device" });
       } else {
@@ -475,55 +555,60 @@ function App() {
 
         {/* Anti-Phishing Banner */}
         <div className="phishing-banner" style={{ borderColor: `${profile.accentColor}33` }}>
-          <div className="phishing-greeting" style={{ color: profile.accentColor }}>
-            Welcome back, {profile.name}
+          <div className="phishing-left">
+            <div className="phishing-greeting" style={{ color: profile.accentColor }}>
+              Welcome back, {profile.name}
+            </div>
+            <div className="phishing-phrase">
+              "{profile.secretPhrase}"
+            </div>
           </div>
-          <div className="phishing-phrase">
-            "{profile.secretPhrase}"
-          </div>
-          <div className="phishing-meta">
-            <span>Last login: {formatLastLogin(profile.lastLogin)}</span>
-            {profile.lastAddress && (
-              <span>Last wallet: {profile.lastAddress.slice(0, 10)}...{profile.lastAddress.slice(-6)}</span>
-            )}
-          </div>
-          <div className="phishing-domain">
-            {isDomainValid ? "✓" : "✗"} {currentDomain}
+          <div className="phishing-right">
+            <div className="phishing-meta">
+              <span>{formatLastLogin(profile.lastLogin)}</span>
+              {profile.lastAddress && (
+                <span>{profile.lastAddress.slice(0, 8)}...{profile.lastAddress.slice(-4)}</span>
+              )}
+            </div>
+            <div className="phishing-domain">
+              {isDomainValid ? "✓" : "✗"} {currentDomain}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* ── Network Toggle ── */}
-      <div className="card">
-        <div className="section-label">Network</div>
-        <div className="network-toggle">
-          <button
-            className={`toggle-btn ${network === "testnet" ? "active" : ""}`}
-            onClick={() => handleNetworkSwitch("testnet")}
-            disabled={connecting || signing}
-            style={network === "testnet" ? { background: profile.accentColor } : {}}
-          >
-            Testnet
-          </button>
-          <button
-            className={`toggle-btn ${network === "mainnet" ? "active" : ""}`}
-            onClick={() => handleNetworkSwitch("mainnet")}
-            disabled={connecting || signing}
-            style={network === "mainnet" ? { background: profile.accentColor } : {}}
-          >
-            Mainnet
-          </button>
-        </div>
-      </div>
+      {/* ── Step Timeline ── */}
+      {txStep !== "idle" && <StepTimeline currentStep={txStep} failedAt={failedAtStep} />}
 
-      {/* ── Connect Card ── */}
-      <div className="card">
-        <div className="section-label">Ledger Device</div>
+      {/* ── When NOT connected: Network + Connect ── */}
+      {!ledger && (
+        <>
+          <div className="card">
+            <div className="section-label">Network</div>
+            <div className="network-toggle">
+              <button
+                className={`toggle-btn ${network === "testnet" ? "active" : ""}`}
+                onClick={() => handleNetworkSwitch("testnet")}
+                disabled={connecting || signing}
+                style={network === "testnet" ? { background: profile.accentColor } : {}}
+              >
+                Testnet
+              </button>
+              <button
+                className={`toggle-btn ${network === "mainnet" ? "active" : ""}`}
+                onClick={() => handleNetworkSwitch("mainnet")}
+                disabled={connecting || signing}
+                style={network === "mainnet" ? { background: profile.accentColor } : {}}
+              >
+                Mainnet
+              </button>
+            </div>
+          </div>
 
-        {!ledger ? (
-          <>
+          <div className="card">
+            <div className="section-label">Ledger Device</div>
             <button
-              className="btn btn-primary"
+              className={`btn btn-primary ${!connecting ? "btn-connect-pulse" : ""}`}
               onClick={handleConnect}
               disabled={connecting}
               style={{ background: `linear-gradient(135deg, ${profile.accentColor}, #059669)` }}
@@ -537,50 +622,39 @@ function App() {
             <button
               className="btn btn-outline"
               onClick={handleReleaseUSB}
-              style={{ marginTop: 8, fontSize: ".72rem", opacity: 0.7 }}
+              style={{ marginTop: 6, fontSize: ".68rem", opacity: 0.7 }}
             >
               Release USB
             </button>
-          </>
-        ) : (
-          <>
-            <div className="wallet-info">
-              <div className="wallet-row">
-                <span className="label">Status</span>
-                <span className="value" style={{ color: profile.accentColor }}>
-                  <span className="live-dot" style={{ backgroundColor: profile.accentColor }} /> Connected
-                </span>
-              </div>
-              <div className="wallet-row">
-                <span className="label">Address</span>
-                <span className="value">{ledger.address}</span>
-              </div>
-              <div className="wallet-row">
-                <span className="label">Balance</span>
-                <span className="value" style={{ color: "var(--green)" }}>
-                  {balance?.display || "Loading..."}
-                </span>
-              </div>
-              <div className="wallet-row">
-                <span className="label">Network</span>
-                <span className="value">{network}</span>
-              </div>
+          </div>
+        </>
+      )}
+
+      {/* ── When connected: Compact bar ── */}
+      {ledger && (
+        <div className="connected-bar">
+          <span className="live-dot" style={{ backgroundColor: profile.accentColor }} />
+          <div className="connected-bar-info">
+            <div className="connected-bar-item">
+              <span className="cb-value">{ledger.address.slice(0, 10)}...{ledger.address.slice(-4)}</span>
             </div>
-            <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
-              <button className="btn btn-outline" onClick={handleRefreshBalance} style={{ flex: 1 }}>
-                Refresh
-              </button>
-              <button className="btn btn-outline" onClick={handleDisconnect} style={{ flex: 1, borderColor: "var(--red)", color: "var(--red)" }}>
-                Disconnect
-              </button>
+            <div className="connected-bar-item">
+              <span className="cb-value green">{balance?.display || "..."}</span>
             </div>
-          </>
-        )}
-      </div>
+            <div className="connected-bar-item">
+              <span className="cb-label">{network}</span>
+            </div>
+          </div>
+          <div className="connected-bar-actions">
+            <button className="btn-sm" onClick={handleRefreshBalance}>Refresh</button>
+            <button className="btn-sm danger" onClick={handleDisconnect}>Disconnect</button>
+          </div>
+        </div>
+      )}
 
       {/* ── Transaction Card ── */}
       {ledger && (
-        <div className="card">
+        <div className="card card-enter">
           <div className="section-label">Send Transaction</div>
 
           <div className="input-group">
@@ -635,7 +709,7 @@ function App() {
 
           {/* Transaction Agreement */}
           {showAgreement && !txHash && (
-            <div className="agreement-card">
+            <div className="agreement-card animate-slide-up">
               <div className="agreement-header">Transaction Agreement</div>
               <div className="agreement-body">
                 <div className="agreement-row">
@@ -674,10 +748,10 @@ function App() {
               </label>
 
               <button
-                className="btn btn-primary"
+                className={`btn btn-primary ${signing ? "btn-signing" : ""}`}
                 onClick={handleSignAndSend}
                 disabled={!agreementChecked || signing}
-                style={{ marginTop: 12, background: agreementChecked ? `linear-gradient(135deg, ${profile.accentColor}, #059669)` : undefined }}
+                style={{ marginTop: 12, background: agreementChecked && !signing ? `linear-gradient(135deg, ${profile.accentColor}, #059669)` : undefined }}
               >
                 {signing ? (
                   <><span className="spinner" /> Signing on Ledger...</>
@@ -690,7 +764,7 @@ function App() {
 
           {/* TX Result */}
           {txHash && (
-            <div className="tx-result">
+            <div className="tx-result animate-success">
               <div style={{ color: "var(--green)", fontWeight: 700, marginBottom: 8 }}>
                 Transaction Successful
               </div>
@@ -719,7 +793,7 @@ function App() {
       )}
 
       {/* Debug Toggle */}
-      <div style={{ textAlign: "center", marginTop: 16 }}>
+      <div style={{ textAlign: "center", marginTop: 8 }}>
         <button
           className="btn-link"
           onClick={() => setShowDebug(!showDebug)}
