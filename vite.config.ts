@@ -4,7 +4,9 @@ import nodePolyfills from "rollup-plugin-polyfill-node";
 import { execSync } from "child_process";
 
 // Grab git info at build time
+// Vercel provides VERCEL_GIT_COMMIT_SHA etc. when not in a git repo
 const gitCommit = (() => {
+  if (process.env.VERCEL_GIT_COMMIT_SHA) return process.env.VERCEL_GIT_COMMIT_SHA;
   try { return execSync("git rev-parse HEAD").toString().trim(); }
   catch { return "unknown"; }
 })();
@@ -12,11 +14,13 @@ const gitCommit = (() => {
 const gitCommitShort = gitCommit.slice(0, 7);
 
 const gitBranch = (() => {
+  if (process.env.VERCEL_GIT_COMMIT_REF) return process.env.VERCEL_GIT_COMMIT_REF;
   try { return execSync("git rev-parse --abbrev-ref HEAD").toString().trim(); }
   catch { return "unknown"; }
 })();
 
 const gitDirty = (() => {
+  if (process.env.VERCEL) return false; // Vercel builds from clean commits
   try { return execSync("git status --porcelain").toString().trim().length > 0; }
   catch { return false; }
 })();
