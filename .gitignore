@@ -1,5 +1,5 @@
 node_modules
 dist
 .vercel
-
-.vercel
+.claude
+tsconfig.tsbuildinfo
