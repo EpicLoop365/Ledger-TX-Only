@@ -9,6 +9,14 @@
 </head>
 <body>
   <div id="root"></div>
-  <script type="module" src="/src/main.tsx"></script>
+  <script type="module">
+    // Buffer polyfill — must run before App imports
+    import { Buffer } from "buffer";
+    window.Buffer = Buffer;
+    globalThis.Buffer = Buffer;
+
+    // Now load the app
+    import("/src/main.tsx");
+  </script>
 </body>
 </html>

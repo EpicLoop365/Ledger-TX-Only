@@ -1,11 +1,37 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import nodePolyfills from "rollup-plugin-polyfill-node";
+import { execSync } from "child_process";
+
+// Grab git info at build time
+const gitCommit = (() => {
+  try { return execSync("git rev-parse HEAD").toString().trim(); }
+  catch { return "unknown"; }
+})();
+
+const gitCommitShort = gitCommit.slice(0, 7);
+
+const gitBranch = (() => {
+  try { return execSync("git rev-parse --abbrev-ref HEAD").toString().trim(); }
+  catch { return "unknown"; }
+})();
+
+const gitDirty = (() => {
+  try { return execSync("git status --porcelain").toString().trim().length > 0; }
+  catch { return false; }
+})();
+
+const buildTime = new Date().toISOString();
 
 export default defineConfig({
   plugins: [react()],
   define: {
     global: "globalThis",
+    __GIT_COMMIT__: JSON.stringify(gitCommit),
+    __GIT_COMMIT_SHORT__: JSON.stringify(gitCommitShort),
+    __GIT_BRANCH__: JSON.stringify(gitBranch),
+    __GIT_DIRTY__: JSON.stringify(gitDirty),
+    __BUILD_TIME__: JSON.stringify(buildTime),
   },
   resolve: {
     alias: {

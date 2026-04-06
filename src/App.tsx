@@ -3,6 +3,7 @@ import { connectLedger, signWithLedger, disconnectLedger, type LedgerConnection 
 import { fetchBalance, getAccountInfo, getChainId, broadcastTx, getDenom, getPrefix, fetchStakingInfo, type BalanceInfo, type ValidatorInfo, type DelegationInfo } from "./client";
 import { buildAminoSignDoc, assembleTxBytes, toMicroAmount, buildDelegateSignDoc, buildUndelegateSignDoc, buildClaimRewardsSignDoc, assembleStakingTxBytes } from "./txBuilder";
 import { checkCompliance, type ComplianceResult } from "./compliance";
+import { BUILD_INFO } from "./build-info";
 
 type AppTab = "send" | "stake";
 
@@ -1136,9 +1137,43 @@ function App() {
         </div>
       )}
 
+      {/* Build Verification Badge */}
+      <div className="build-badge">
+        <div className="build-badge-header">
+          <span className="build-badge-icon">&#x1f512;</span>
+          <span className="build-badge-title">Open Source Verified Build</span>
+        </div>
+        <div className="build-badge-rows">
+          <div className="build-badge-row">
+            <span className="build-badge-label">Commit</span>
+            <a
+              className="build-badge-value"
+              href={`${BUILD_INFO.repoUrl}/commit/${BUILD_INFO.commit}`}
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              {BUILD_INFO.commitShort}{BUILD_INFO.dirty ? " (dirty)" : ""}
+            </a>
+          </div>
+          <div className="build-badge-row">
+            <span className="build-badge-label">Branch</span>
+            <span className="build-badge-value">{BUILD_INFO.branch}</span>
+          </div>
+          <div className="build-badge-row">
+            <span className="build-badge-label">Built</span>
+            <span className="build-badge-value">{new Date(BUILD_INFO.buildTime).toLocaleString()}</span>
+          </div>
+        </div>
+        <div className="build-badge-verify">
+          <a href={BUILD_INFO.repoUrl} target="_blank" rel="noopener noreferrer">
+            Verify: clone repo &rarr; npm run build &rarr; compare hash
+          </a>
+        </div>
+      </div>
+
       {/* Footer */}
       <div className="footer">
-        <div>Powered by <a href="https://solomentelabs.com" target="_blank">TXAI</a> &bull; Built on TX (Coreum) &bull; <a href="https://github.com/EpicLoop365/Ledger-TX-Only" target="_blank">Source Code</a></div>
+        <div>Powered by <a href="https://solomentelabs.com" target="_blank">TXAI</a> &bull; Built on TX (Coreum) &bull; <a href={BUILD_INFO.repoUrl} target="_blank">Source Code</a></div>
         <button className="btn-link" onClick={handleResetProfile} style={{ marginTop: 6, fontSize: ".6rem", color: "var(--muted)" }}>
           Reset Anti-Phishing Profile
         </button>
