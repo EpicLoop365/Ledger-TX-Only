@@ -36,6 +36,25 @@ body {
   max-width: 1200px;
 }
 
+/* Pre-connect + chrome elements: stay narrow and centered */
+#root > .header,
+#root > .card,
+#root > .status,
+#root > .build-badge,
+#root > .footer,
+#root > .step-timeline,
+#root > .domain-warning,
+#root > div:not(.dashboard-layout):not(.connected-bar) {
+  max-width: 620px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Connected bar: full width but not overly stretched */
+.connected-bar {
+  max-width: 100%;
+}
+
 /* ── Dashboard Two-Panel Layout ── */
 .dashboard-layout {
   display: grid;

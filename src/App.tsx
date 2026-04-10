@@ -1596,9 +1596,19 @@ function App() {
                   <span className="spinner" style={{ width: 12, height: 12 }} /> Loading from chain...
                 </div>
               )}
-              {!txHistoryLoading && txHistory.length === 0 && (
-                <div style={{ padding: 10, textAlign: "center", color: "var(--muted)", fontSize: ".75rem" }}>
-                  No transactions found
+              {!txHistoryLoading && txHistory.length === 0 && ledger && (
+                <div style={{ padding: 10, textAlign: "center", fontSize: ".75rem" }}>
+                  <div style={{ color: "var(--muted)", marginBottom: 6 }}>
+                    No transactions loaded
+                  </div>
+                  <a
+                    href={`https://${network === "mainnet" ? "explorer" : "explorer.testnet-1"}.coreum.dev/coreum/accounts/${ledger.address}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: "var(--accent)", fontSize: ".7rem" }}
+                  >
+                    View full history on Coreum Explorer ↗
+                  </a>
                 </div>
               )}
               {txHistory.map((tx, i) => {

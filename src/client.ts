@@ -255,8 +255,22 @@ export async function simulateTx(
 const TESTNET_REST = "https://full-node.testnet-1.coreum.dev:1317";
 const MAINNET_REST = "https://full-node.mainnet-1.coreum.dev:1317";
 
+// Alternative REST endpoints for tx search (primary node may lack tx indexing)
+const MAINNET_REST_ALT = [
+  "https://rest-coreum.ecostake.com",
+  "https://coreum-rest.publicnode.com",
+  "https://full-node.mainnet-1.coreum.dev:1317",
+];
+const TESTNET_REST_ALT = [
+  "https://full-node.testnet-1.coreum.dev:1317",
+];
+
 function getRestBase(network: "testnet" | "mainnet"): string {
   return network === "mainnet" ? MAINNET_REST : TESTNET_REST;
+}
+
+function getRestBases(network: "testnet" | "mainnet"): string[] {
+  return network === "mainnet" ? MAINNET_REST_ALT : TESTNET_REST_ALT;
 }
 
 export interface ValidatorInfo {
@@ -521,33 +535,34 @@ export async function fetchRecentSends(
   network: "testnet" | "mainnet" = "testnet",
   limit: number = 10
 ): Promise<RecentSend[]> {
-  const base = getRestBase(network);
+  const bases = getRestBases(network);
   const denom = getDenom(network);
 
-  // Helper: try a tx search query, falling back without order_by if the node rejects it
+  // Try each REST node with order_by fallback
   const queryTxs = async (event: string): Promise<any[]> => {
-    // Try with order_by first (some nodes support it)
-    for (const withOrder of [true, false]) {
-      try {
-        const params: Record<string, string> = {
-          "events": event,
-          "pagination.limit": String(limit),
-        };
-        if (withOrder) params["order_by"] = "ORDER_BY_DESC";
-        const url = `${base}/cosmos/tx/v1beta1/txs?${new URLSearchParams(params)}`;
-        console.log(`[fetchRecentSends] Trying: ${url.slice(0, 120)}...`);
-        const res = await fetch(url);
-        if (!res.ok) {
-          console.warn(`[fetchRecentSends] HTTP ${res.status}${withOrder ? " (with order_by)" : ""}`);
-          if (withOrder) continue; // retry without order_by
-          return [];
+    for (const base of bases) {
+      for (const withOrder of [true, false]) {
+        try {
+          const params: Record<string, string> = {
+            "events": event,
+            "pagination.limit": String(limit),
+          };
+          if (withOrder) params["order_by"] = "ORDER_BY_DESC";
+          const url = `${base}/cosmos/tx/v1beta1/txs?${new URLSearchParams(params)}`;
+          console.log(`[fetchRecentSends] ${base.slice(8, 40)}... order=${withOrder}`);
+          const res = await fetch(url);
+          if (!res.ok) {
+            if (withOrder) continue;
+            throw new Error(`HTTP ${res.status}`);
+          }
+          const data = await res.json();
+          const txs = data.tx_responses || [];
+          if (txs.length > 0) return txs;
+          if (!withOrder) break; // this node works but has no results, try next
+        } catch {
+          if (withOrder) continue;
+          break; // try next node
         }
-        const data = await res.json();
-        return data.tx_responses || [];
-      } catch (e) {
-        console.warn(`[fetchRecentSends] fetch error:`, e);
-        if (withOrder) continue;
-        return [];
       }
     }
     return [];
@@ -619,11 +634,12 @@ export async function fetchTxHistory(
   network: "testnet" | "mainnet" = "testnet",
   limit: number = 20
 ): Promise<TxHistoryItem[]> {
-  const base = getRestBase(network);
+  const bases = getRestBases(network);
   const denom = getDenom(network);
 
-  // Helper: query tx search with automatic order_by fallback
-  const queryTxs = async (event: string): Promise<any[]> => {
+  // Helper: try a single tx search query against a specific node
+  const tryQuery = async (base: string, event: string): Promise<any[]> => {
+    // Try with order_by, then without (some nodes reject it)
     for (const withOrder of [true, false]) {
       try {
         const params: Record<string, string> = {
@@ -632,19 +648,35 @@ export async function fetchTxHistory(
         };
         if (withOrder) params["order_by"] = "ORDER_BY_DESC";
         const url = `${base}/cosmos/tx/v1beta1/txs?${new URLSearchParams(params)}`;
-        console.log(`[fetchTxHistory] Trying: ${url.slice(0, 120)}...`);
+        console.log(`[fetchTxHistory] ${base.slice(8, 40)}... event=${event.slice(0, 30)} order=${withOrder}`);
         const res = await fetch(url);
         if (!res.ok) {
-          console.warn(`[fetchTxHistory] HTTP ${res.status}${withOrder ? " (with order_by)" : ""}`);
-          if (withOrder) continue;
-          return [];
+          console.warn(`[fetchTxHistory] HTTP ${res.status} from ${base.slice(8, 40)}`);
+          if (withOrder) continue; // retry without order_by
+          throw new Error(`HTTP ${res.status}`); // try next node
         }
         const data = await res.json();
-        return data.tx_responses || [];
+        const txs = data.tx_responses || [];
+        if (txs.length > 0) {
+          console.log(`[fetchTxHistory] Got ${txs.length} txs from ${base.slice(8, 40)}`);
+        }
+        return txs;
       } catch (e) {
-        console.warn(`[fetchTxHistory] fetch error:`, e);
         if (withOrder) continue;
-        return [];
+        throw e; // bubble up to try next node
+      }
+    }
+    return [];
+  };
+
+  // Try each REST node until one returns results
+  const queryTxs = async (event: string): Promise<any[]> => {
+    for (const base of bases) {
+      try {
+        const txs = await tryQuery(base, event);
+        if (txs.length > 0) return txs;
+      } catch {
+        continue; // try next node
       }
     }
     return [];
