@@ -171,7 +171,7 @@ function App() {
   // Send velocity monitor (in-memory — resets on page reload, tamper-proof)
   const [sendTimestamps, setSendTimestamps] = useState<number[]>([]);
 
-  // Transaction simulation
+  // Transaction simulation (internal safety — not displayed)
   const [simResult, setSimResult] = useState<SimulateResult | null>(null);
 
   // On-chain recent sends (derived from txHistory — no separate REST call needed)
@@ -595,6 +595,7 @@ function App() {
         .catch(() => {})
         .finally(() => setTxHistoryLoading(false));
     }
+
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ledger, network]);
 
@@ -811,7 +812,7 @@ function App() {
         const warnings: string[] = [];
 
         if (!sim.success) {
-          warnings.push(`Simulation warning: ${sim.error}`);
+          warnings.push("Transaction may not succeed — verify carefully");
         }
         if (!history.hasPriorSends) {
           warnings.push("First contact — never sent to this address before");
@@ -823,7 +824,7 @@ function App() {
         if (warnings.length > 0) {
           setStatus({ type: "warn", message: warnings.join(". ") + ". Verify carefully on your Ledger." });
         } else {
-          setStatus({ type: "pass", message: `All checks passed. Estimated gas: ${sim.gasUsed.toLocaleString()}.` });
+          setStatus({ type: "pass", message: "All checks passed." });
         }
       } else {
         setAddressSafety(null);
@@ -1388,98 +1389,6 @@ function App() {
                 </div>
               </div>
 
-              {/* ── On-chain Address Safety Banner ── */}
-              {addressSafety?.status === "checking" && (
-                <div className="address-safety checking">
-                  <span className="spinner" style={{ width: 12, height: 12 }} /> Checking address history on-chain...
-                </div>
-              )}
-              {addressSafety?.status === "first_contact" && (
-                <div className="address-safety first-contact">
-                  <div className="address-safety-icon">⚠</div>
-                  <div className="address-safety-text">
-                    <strong>First contact</strong> — You have never sent to this address before.
-                    <br />Verify every character on your Ledger screen before approving.
-                  </div>
-                </div>
-              )}
-              {addressSafety?.status === "known" && (
-                <div className="address-safety known">
-                  <div className="address-safety-icon">✓</div>
-                  <div className="address-safety-text">
-                    You&apos;ve sent to this address <strong>{addressSafety.sendCount} time{addressSafety.sendCount > 1 ? "s" : ""}</strong> before.
-                    <br />Still verify the address on your Ledger screen.
-                  </div>
-                </div>
-              )}
-
-              {/* ── Transaction Simulation Result ── */}
-              {simResult && simResult.success && (
-                <div className="address-safety known" style={{ borderColor: "rgba(52,211,153,.15)" }}>
-                  <div className="address-safety-icon">⚡</div>
-                  <div className="address-safety-text">
-                    Simulation passed — estimated gas: <strong>{simResult.gasUsed.toLocaleString()}</strong>
-                  </div>
-                </div>
-              )}
-              {simResult && !simResult.success && (
-                <div className="address-safety first-contact">
-                  <div className="address-safety-icon">⚠</div>
-                  <div className="address-safety-text">
-                    <strong>Simulation failed</strong> — {simResult.error}
-                    <br />This transaction may fail on-chain. Proceed with caution.
-                  </div>
-                </div>
-              )}
-
-              {/* ── Amount Sanity Check ── */}
-              {balance && (() => {
-                const balMicro = parseInt(balance.amount || "0", 10);
-                const sendMicro = Math.round(parseFloat(amount) * 1_000_000);
-                const pct = balMicro > 0 ? (sendMicro / balMicro) * 100 : 0;
-                if (pct > 90) {
-                  return (
-                    <div className="address-safety first-contact" style={{ borderColor: "rgba(239,68,68,.5)", background: "rgba(239,68,68,.1)" }}>
-                      <div className="address-safety-icon">🛑</div>
-                      <div className="address-safety-text" style={{ color: "#f87171" }}>
-                        <strong>Sending {pct.toFixed(0)}% of your total balance!</strong>
-                        <br />This will leave almost nothing in your wallet. Are you sure?
-                      </div>
-                    </div>
-                  );
-                }
-                if (pct > 50) {
-                  return (
-                    <div className="address-safety first-contact">
-                      <div className="address-safety-icon">⚠</div>
-                      <div className="address-safety-text">
-                        <strong>Large transfer — {pct.toFixed(0)}% of your balance.</strong>
-                        <br />Double-check the amount before approving.
-                      </div>
-                    </div>
-                  );
-                }
-                return null;
-              })()}
-
-              {/* ── Send Velocity Warning (in-memory — tamper-proof) ── */}
-              {(() => {
-                const cutoff = Date.now() - VELOCITY_WINDOW_MS;
-                const recentCount = sendTimestamps.filter((t) => t > cutoff).length;
-                if (recentCount >= VELOCITY_THRESHOLD) {
-                  return (
-                    <div className="address-safety first-contact" style={{ borderColor: "rgba(245,158,11,.5)" }}>
-                      <div className="address-safety-icon">⚡</div>
-                      <div className="address-safety-text">
-                        <strong>Unusual activity — {recentCount} transactions in the last 10 minutes.</strong>
-                        <br />Confirm this is intentional and your session hasn&apos;t been compromised.
-                      </div>
-                    </div>
-                  );
-                }
-                return null;
-              })()}
-
               <label className="agreement-check">
                 <input
                   type="checkbox"
@@ -1579,11 +1488,6 @@ function App() {
                   </div>
                 );
               })}
-              {parseInt(totalRewards) > 0 && (
-                <div style={{ marginTop: 8, fontSize: "1.25rem", fontWeight: 700, fontFamily: "var(--mono)", color: "var(--green)", textAlign: "right" }}>
-                  Total pending: {(parseInt(totalRewards) / 1_000_000).toFixed(4)} CORE
-                </div>
-              )}
             </div>
           )}
 
@@ -1631,7 +1535,7 @@ function App() {
               }}
               style={{
                 width: "100%",
-                padding: "10px 12px",
+                padding: "8px 10px",
                 borderRadius: 7,
                 border: selectedValidator
                   ? "1.5px solid var(--green)"
@@ -1666,34 +1570,6 @@ function App() {
                 );
               })}
             </select>
-            {selectedValidator && (() => {
-              const v = validators.find((x) => x.operatorAddress === selectedValidator);
-              const d = delegations.find((x) => x.validatorAddress === selectedValidator);
-              const stakedAmount = d ? (parseInt(d.balance) / 1_000_000).toFixed(2) : "0.00";
-              const pendingRewards = d ? (parseInt(d.rewards) / 1_000_000).toFixed(4) : "0.0000";
-              const hasStake = d && parseInt(d.balance) > 0;
-              return v ? (
-                <div className="validator-detail-badge">
-                  <div className="validator-detail-name">{v.moniker}</div>
-                  <div className="validator-detail-stats">
-                    <div className="validator-detail-stat">
-                      <span className="validator-detail-label">Staked</span>
-                      <span className="validator-detail-value">{stakedAmount} CORE</span>
-                    </div>
-                    {hasStake && (
-                      <div className="validator-detail-stat">
-                        <span className="validator-detail-label">Pending</span>
-                        <span className="validator-detail-value green">+{pendingRewards} CORE</span>
-                      </div>
-                    )}
-                    <div className="validator-detail-stat">
-                      <span className="validator-detail-label">Commission</span>
-                      <span className="validator-detail-value">{(parseFloat(v.commission) * 100).toFixed(1)}%</span>
-                    </div>
-                  </div>
-                </div>
-              ) : null;
-            })()}
           </div>
 
           <div className="input-group">
@@ -1754,14 +1630,6 @@ function App() {
             </div>
           )}
 
-          <button
-            className="btn-sm"
-            onClick={loadStakingInfo}
-            disabled={stakingLoading}
-            style={{ marginTop: 8, width: "100%", textAlign: "center" }}
-          >
-            {stakingLoading ? "Loading..." : "Refresh Staking Info"}
-          </button>
         </div>
       )}
 
@@ -1782,9 +1650,9 @@ function App() {
             type="button"
             className="tx-history-toggle"
             onClick={() => setShowHistory(!showHistory)}
-            style={{ padding: "12px 0" }}
+            style={{ padding: "8px 0" }}
           >
-            <span style={{ fontSize: "1rem" }}>Transaction History</span>
+            <span style={{ fontSize: ".9rem" }}>Transaction History</span>
             <span style={{ fontSize: ".8rem", color: "var(--muted)" }}>
               {showHistory ? "▲ Hide" : `▼ Show (${txHistory.length})`}
             </span>
@@ -2025,80 +1893,16 @@ function App() {
         </div>
       )}
 
-      {/* Debug Toggle */}
-      <div style={{ textAlign: "center", marginTop: 8 }}>
-        <button
-          className="btn-link"
-          onClick={() => setShowDebug(!showDebug)}
-        >
-          {showDebug ? "Hide" : "Show"} Debug Console
-        </button>
-      </div>
-
-      {/* Debug Panel */}
-      {showDebug && (
-        <div className="card" style={{ marginTop: 8 }}>
-          <div className="section-label">Debug Console</div>
-          <div className="debug-row">
-            <span className="debug-label">USB Devices</span>
-            <span className="debug-value">{usbDevices}</span>
-          </div>
-          <div className="debug-row">
-            <span className="debug-label">App State</span>
-            <span className="debug-value">{ledger ? "Connected" : connecting ? "Connecting..." : "Disconnected"}</span>
-          </div>
-          <div className="debug-row">
-            <span className="debug-label">Network</span>
-            <span className="debug-value">{network}</span>
-          </div>
-          {ledger && (
-            <div className="debug-row">
-              <span className="debug-label">Address</span>
-              <span className="debug-value">{ledger.address}</span>
-            </div>
-          )}
-          <div className="debug-log">
-            {debugLog.length === 0 ? (
-              <div style={{ color: "var(--muted)", fontStyle: "italic" }}>No events yet</div>
-            ) : (
-              debugLog.map((line, i) => <div key={i}>{line}</div>)
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Build Verification Badge */}
-      <div className="build-badge">
-        <div className="build-badge-header">
-          <span className="build-badge-icon">&#x1f512;</span>
-          <span className="build-badge-title">Open Source Verified Build</span>
-        </div>
-        <div className="build-badge-rows">
-          <div className="build-badge-row">
-            <span className="build-badge-label">Commit</span>
-            <a
-              className="build-badge-value"
-              href={`${BUILD_INFO.repoUrl}/commit/${BUILD_INFO.commit}`}
-              target="_blank"
-              rel="noopener noreferrer"
-            >
-              {BUILD_INFO.commitShort}{BUILD_INFO.dirty ? " (dirty)" : ""}
-            </a>
-          </div>
-          <div className="build-badge-row">
-            <span className="build-badge-label">Branch</span>
-            <span className="build-badge-value">{BUILD_INFO.branch}</span>
-          </div>
-          <div className="build-badge-row">
-            <span className="build-badge-label">Built</span>
-            <span className="build-badge-value">{new Date(BUILD_INFO.buildTime).toLocaleString()}</span>
-          </div>
-        </div>
-        <div className="build-badge-verify">
-          <a href={BUILD_INFO.repoUrl} target="_blank" rel="noopener noreferrer">
-            Verify: clone repo &rarr; npm run build &rarr; compare hash
-          </a>
-        </div>
+      {/* Build Verification Badge — compact single line */}
+      <div className="build-badge-compact">
+        <span>&#x1f512;</span>
+        <a href={`${BUILD_INFO.repoUrl}/commit/${BUILD_INFO.commit}`} target="_blank" rel="noopener noreferrer">
+          {BUILD_INFO.commitShort}
+        </a>
+        <span className="build-badge-sep">&bull;</span>
+        <span>{new Date(BUILD_INFO.buildTime).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })}</span>
+        <span className="build-badge-sep">&bull;</span>
+        <a href={BUILD_INFO.repoUrl} target="_blank" rel="noopener noreferrer">Source</a>
       </div>
 
       {/* Footer */}

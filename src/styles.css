@@ -26,7 +26,7 @@ body {
   display: flex;
   justify-content: center;
   align-items: flex-start;
-  padding: 16px 20px;
+  padding: 8px 20px;
   background-image: radial-gradient(rgba(129,140,248,.03) 1px, transparent 1px);
   background-size: 32px 32px;
 }
@@ -40,7 +40,7 @@ body {
 #root > .header,
 #root > .card,
 #root > .status,
-#root > .build-badge,
+#root > .build-badge-compact,
 #root > .footer,
 #root > .step-timeline,
 #root > .domain-warning,
@@ -499,8 +499,8 @@ body {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 12px 18px;
-  margin-bottom: 8px;
+  padding: 10px 16px;
+  margin-bottom: 6px;
 }
 
 /* Section label */
@@ -930,11 +930,11 @@ body {
   display: flex;
   justify-content: space-between;
   gap: 8px;
-  padding: 12px 14px;
+  padding: 8px 12px;
   background: rgba(52,211,153,.06);
   border: 1px solid rgba(52,211,153,.15);
   border-radius: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
 }
 
 .staking-summary-row {
@@ -955,7 +955,7 @@ body {
 
 .staking-summary-value {
   font-family: var(--mono);
-  font-size: 1.25rem;
+  font-size: 1rem;
   font-weight: 700;
   color: var(--text);
 }
@@ -1516,7 +1516,7 @@ body {
 /* ── Footer ── */
 .footer {
   text-align: center;
-  margin-top: 6px;
+  margin-top: 2px;
   font-size: .55rem;
   color: var(--muted);
   font-family: var(--mono);
@@ -1533,8 +1533,8 @@ body {
   align-items: center;
   justify-content: center;
   gap: 0;
-  padding: 8px 8px;
-  margin-bottom: 6px;
+  padding: 5px 8px;
+  margin-bottom: 4px;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1562,13 +1562,13 @@ body {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  min-width: 50px;
+  gap: 2px;
+  min-width: 44px;
 }
 
 .step-circle {
-  width: 28px;
-  height: 28px;
+  width: 22px;
+  height: 22px;
   border-radius: 50%;
   display: flex;
   align-items: center;
@@ -1889,106 +1889,41 @@ body {
 
 .delegation-amount {
   font-family: var(--mono);
-  font-size: 1.3rem;
+  font-size: 1rem;
   font-weight: 700;
   color: var(--text);
 }
 
 .delegation-rewards {
   font-family: var(--mono);
-  font-size: 1.15rem;
-  font-weight: 600;
-  color: var(--green);
-}
-
-/* ── Build Verification Badge ── */
-.build-badge {
-  margin-top: 8px;
-  background: var(--bg2);
-  border: 1px solid rgba(52,211,153,.15);
-  border-radius: 10px;
-  padding: 10px 14px;
-}
-
-.build-badge-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-
-.build-badge-icon {
   font-size: .85rem;
-}
-
-.build-badge-title {
-  font-family: var(--mono);
-  font-size: .65rem;
-  font-weight: 700;
-  color: var(--green);
-  text-transform: uppercase;
-  letter-spacing: .06em;
-}
-
-.build-badge-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.build-badge-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 3px 0;
-  border-bottom: 1px solid var(--border);
-}
-
-.build-badge-row:last-child {
-  border: none;
-}
-
-.build-badge-label {
-  font-size: .58rem;
   font-weight: 600;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .06em;
+  color: var(--green);
 }
 
-.build-badge-value {
+/* ── Build Badge — compact single line ── */
+.build-badge-compact {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 0;
   font-family: var(--mono);
-  font-size: .65rem;
-  color: var(--text);
+  font-size: .6rem;
+  color: var(--muted);
+}
+
+.build-badge-compact a {
+  color: var(--green);
   text-decoration: none;
 }
 
-a.build-badge-value {
-  color: var(--green);
-}
-
-a.build-badge-value:hover {
+.build-badge-compact a:hover {
   text-decoration: underline;
 }
 
-.build-badge-verify {
-  margin-top: 4px;
-  padding: 4px 10px;
-  background: var(--bg);
-  border-radius: 6px;
-  text-align: center;
-}
-
-.build-badge-verify a {
-  font-family: var(--mono);
-  font-size: .58rem;
-  color: var(--muted);
-  text-decoration: none;
-  letter-spacing: .02em;
-}
-
-.build-badge-verify a:hover {
-  color: var(--green);
+.build-badge-sep {
+  opacity: .4;
 }
 
 /* ── Responsive ── */
