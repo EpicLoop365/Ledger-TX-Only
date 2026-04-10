@@ -232,7 +232,7 @@ function App() {
   // Transaction history panel
   const [txHistory, setTxHistory] = useState<TxHistoryItem[]>([]);
   const [txHistoryLoading, setTxHistoryLoading] = useState(false);
-  const [showHistory, setShowHistory] = useState(false);
+  const [showHistory, setShowHistory] = useState(true);
 
   // Ledger verification popup
   const [showLedgerVerify, setShowLedgerVerify] = useState(false);
@@ -436,6 +436,13 @@ function App() {
 
     return () => clearInterval(interval);
   }, [ledger, lastActivity]);
+
+  // Auto-close Ledger verification popup when signing completes
+  useEffect(() => {
+    if (showLedgerVerify && (txStep === "broadcast" || txStep === "done" || txStep === "failed")) {
+      setShowLedgerVerify(false);
+    }
+  }, [txStep, showLedgerVerify]);
 
   // ── Release USB ──
   const handleReleaseUSB = useCallback(async () => {
@@ -903,7 +910,8 @@ function App() {
   // ── Ledger Verification Popup ──
   // Shows users exactly what their Ledger screen will display before signing
   const handleLedgerVerifyProceed = useCallback(() => {
-    setShowLedgerVerify(false);
+    // Popup stays OPEN so user can cross-check fields with their Ledger screen.
+    // It auto-closes when signing completes (see useEffect below).
     if (ledgerVerifyType === "send") {
       handleSignAndSend();
     } else if (ledgerVerifyType === "delegate" || ledgerVerifyType === "undelegate") {
@@ -1883,21 +1891,31 @@ function App() {
             )}
 
             <div className="ledger-verify-warning">
-              If ANY field does not match, press <strong>REJECT</strong> on your Ledger device.
+              {signing
+                ? "Compare each field above with your Ledger screen. Approve or reject on the device."
+                : <>If ANY field does not match, press <strong>REJECT</strong> on your Ledger device.</>
+              }
             </div>
 
-            <div style={{ display: "flex", gap: 8 }}>
-              <button className="btn btn-outline" onClick={() => setShowLedgerVerify(false)} style={{ flex: 1 }}>
-                Cancel
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={handleLedgerVerifyProceed}
-                style={{ flex: 1, background: `linear-gradient(135deg, ${profile.accentColor}, #059669)` }}
-              >
-                Proceed to Sign
-              </button>
-            </div>
+            {signing ? (
+              <div className="ledger-verify-signing">
+                <span className="spinner" style={{ width: 16, height: 16 }} />
+                <span>Waiting for Ledger approval...</span>
+              </div>
+            ) : (
+              <div style={{ display: "flex", gap: 8 }}>
+                <button className="btn btn-outline" onClick={() => setShowLedgerVerify(false)} style={{ flex: 1 }}>
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleLedgerVerifyProceed}
+                  style={{ flex: 1, background: `linear-gradient(135deg, ${profile.accentColor}, #059669)` }}
+                >
+                  Proceed to Sign
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -464,26 +464,26 @@ export async function checkAddressHistory(
 ): Promise<AddressHistory> {
   const base = getRestBase(network);
 
-  // Cosmos SDK tx search with transfer events
-  // We only need 1 result to prove prior contact — keep pagination tiny for speed
-  const params = new URLSearchParams({
-    "events": `transfer.sender='${sender}'`,
-    "pagination.limit": "1",
-    "order_by": "ORDER_BY_DESC",
-  });
-
-  // The Cosmos tx search API requires separate `events` params for AND logic,
-  // but URLSearchParams merges them. Use manual URL construction.
-  const url = `${base}/cosmos/tx/v1beta1/txs?` +
-    `events=transfer.sender%3D%27${sender}%27&` +
-    `events=transfer.recipient%3D%27${recipient}%27&` +
-    `pagination.limit=1&order_by=ORDER_BY_DESC`;
+  // The Cosmos tx search API requires separate `events` params for AND logic.
+  // Try with order_by first, fall back without (some nodes return 500).
+  const buildUrl = (withOrder: boolean) => {
+    let url = `${base}/cosmos/tx/v1beta1/txs?` +
+      `events=${encodeURIComponent(`transfer.sender='${sender}'`)}&` +
+      `events=${encodeURIComponent(`transfer.recipient='${recipient}'`)}&` +
+      `pagination.limit=1`;
+    if (withOrder) url += `&order_by=ORDER_BY_DESC`;
+    return url;
+  };
 
   try {
-    const res = await fetch(url);
+    // Try with order_by, fall back without if the node rejects it
+    let res = await fetch(buildUrl(true));
+    if (!res.ok) {
+      console.warn(`checkAddressHistory: HTTP ${res.status} (with order_by), retrying...`);
+      res = await fetch(buildUrl(false));
+    }
     if (!res.ok) {
       console.warn(`checkAddressHistory: HTTP ${res.status}`);
-      // On network error, fail open — don't block sends, just skip the warning
       return { hasPriorSends: false, sendCount: 0 };
     }
     const data = await res.json();
@@ -524,25 +524,42 @@ export async function fetchRecentSends(
   const base = getRestBase(network);
   const denom = getDenom(network);
 
-  // Query recent outbound transfers from this sender
-  const url = `${base}/cosmos/tx/v1beta1/txs?` +
-    `events=transfer.sender%3D%27${sender}%27&` +
-    `pagination.limit=${limit}&order_by=ORDER_BY_DESC`;
+  // Helper: try a tx search query, falling back without order_by if the node rejects it
+  const queryTxs = async (event: string): Promise<any[]> => {
+    // Try with order_by first (some nodes support it)
+    for (const withOrder of [true, false]) {
+      try {
+        const params: Record<string, string> = {
+          "events": event,
+          "pagination.limit": String(limit),
+        };
+        if (withOrder) params["order_by"] = "ORDER_BY_DESC";
+        const url = `${base}/cosmos/tx/v1beta1/txs?${new URLSearchParams(params)}`;
+        console.log(`[fetchRecentSends] Trying: ${url.slice(0, 120)}...`);
+        const res = await fetch(url);
+        if (!res.ok) {
+          console.warn(`[fetchRecentSends] HTTP ${res.status}${withOrder ? " (with order_by)" : ""}`);
+          if (withOrder) continue; // retry without order_by
+          return [];
+        }
+        const data = await res.json();
+        return data.tx_responses || [];
+      } catch (e) {
+        console.warn(`[fetchRecentSends] fetch error:`, e);
+        if (withOrder) continue;
+        return [];
+      }
+    }
+    return [];
+  };
 
   try {
-    const res = await fetch(url);
-    if (!res.ok) {
-      console.warn(`fetchRecentSends: HTTP ${res.status}`);
-      return [];
-    }
-    const data = await res.json();
-    const txs = data.tx_responses || [];
+    const txs = await queryTxs(`transfer.sender='${sender}'`);
 
     const seen = new Set<string>();
     const results: RecentSend[] = [];
 
     for (const tx of txs) {
-      // Parse MsgSend from the tx body
       const messages = tx.tx?.body?.messages || [];
       for (const msg of messages) {
         if (msg["@type"] === "/cosmos.bank.v1beta1.MsgSend" && msg.from_address === sender) {
@@ -550,7 +567,6 @@ export async function fetchRecentSends(
           if (!recipient || seen.has(recipient)) continue;
           seen.add(recipient);
 
-          // Extract amount
           const coins = msg.amount || [];
           const coin = coins.find((c: any) => c.denom === denom) || coins[0];
           const microAmt = parseInt(coin?.amount || "0", 10);
@@ -595,90 +611,121 @@ export interface TxHistoryItem {
 
 /**
  * Fetch recent transactions for a wallet address (all types).
- * Queries the tx search endpoint for any tx involving this address as sender.
+ * Queries the Cosmos tx search endpoint for sender and receiver events,
+ * merges them, deduplicates by txHash, and sorts by timestamp.
  */
 export async function fetchTxHistory(
   address: string,
   network: "testnet" | "mainnet" = "testnet",
-  limit: number = 10
+  limit: number = 20
 ): Promise<TxHistoryItem[]> {
   const base = getRestBase(network);
   const denom = getDenom(network);
 
-  // Query all txs where this address is the sender (covers sends, stakes, claims)
-  const url = `${base}/cosmos/tx/v1beta1/txs?` +
-    `events=message.sender%3D%27${address}%27&` +
-    `pagination.limit=${limit}&order_by=ORDER_BY_DESC`;
+  // Helper: query tx search with automatic order_by fallback
+  const queryTxs = async (event: string): Promise<any[]> => {
+    for (const withOrder of [true, false]) {
+      try {
+        const params: Record<string, string> = {
+          "events": event,
+          "pagination.limit": String(limit),
+        };
+        if (withOrder) params["order_by"] = "ORDER_BY_DESC";
+        const url = `${base}/cosmos/tx/v1beta1/txs?${new URLSearchParams(params)}`;
+        console.log(`[fetchTxHistory] Trying: ${url.slice(0, 120)}...`);
+        const res = await fetch(url);
+        if (!res.ok) {
+          console.warn(`[fetchTxHistory] HTTP ${res.status}${withOrder ? " (with order_by)" : ""}`);
+          if (withOrder) continue;
+          return [];
+        }
+        const data = await res.json();
+        return data.tx_responses || [];
+      } catch (e) {
+        console.warn(`[fetchTxHistory] fetch error:`, e);
+        if (withOrder) continue;
+        return [];
+      }
+    }
+    return [];
+  };
+
+  // Parse a single tx_response into TxHistoryItem(s)
+  const parseTx = (tx: any): TxHistoryItem[] => {
+    const items: TxHistoryItem[] = [];
+    const messages = tx.tx?.body?.messages || [];
+    const success = tx.code === 0;
+    const timestamp = tx.timestamp || "";
+    const txHash = tx.txhash || "";
+
+    for (const msg of messages) {
+      const typeUrl = msg["@type"] || "";
+
+      if (typeUrl === "/cosmos.bank.v1beta1.MsgSend") {
+        const coins = msg.amount || [];
+        const coin = coins.find((c: any) => c.denom === denom) || coins[0];
+        const micro = parseInt(coin?.amount || "0", 10);
+        const isSend = msg.from_address === address;
+        items.push({
+          type: isSend ? "send" : "receive",
+          txHash, timestamp,
+          amount: (micro / 1_000_000).toFixed(2),
+          denom: coin?.denom || denom,
+          counterparty: isSend ? msg.to_address : msg.from_address,
+          success,
+        });
+      } else if (typeUrl === "/cosmos.staking.v1beta1.MsgDelegate") {
+        const coin = msg.amount || {};
+        const micro = parseInt(coin.amount || "0", 10);
+        items.push({
+          type: "delegate", txHash, timestamp,
+          amount: (micro / 1_000_000).toFixed(2),
+          denom: coin.denom || denom,
+          counterparty: msg.validator_address || "", success,
+        });
+      } else if (typeUrl === "/cosmos.staking.v1beta1.MsgUndelegate") {
+        const coin = msg.amount || {};
+        const micro = parseInt(coin.amount || "0", 10);
+        items.push({
+          type: "undelegate", txHash, timestamp,
+          amount: (micro / 1_000_000).toFixed(2),
+          denom: coin.denom || denom,
+          counterparty: msg.validator_address || "", success,
+        });
+      } else if (typeUrl === "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward") {
+        items.push({
+          type: "claim", txHash, timestamp,
+          amount: "",
+          denom,
+          counterparty: msg.validator_address || "", success,
+        });
+      }
+    }
+    return items;
+  };
 
   try {
-    const res = await fetch(url);
-    if (!res.ok) return [];
-    const data = await res.json();
-    const txs = data.tx_responses || [];
+    // Query outbound (sends, stakes, claims) and inbound (receives) in parallel
+    const [senderTxs, receiverTxs] = await Promise.all([
+      queryTxs(`message.sender='${address}'`),
+      queryTxs(`transfer.recipient='${address}'`),
+    ]);
+
+    console.log(`[fetchTxHistory] Got ${senderTxs.length} sender txs, ${receiverTxs.length} receiver txs`);
+
+    // Parse and merge
     const results: TxHistoryItem[] = [];
+    const seenHashes = new Set<string>();
 
-    for (const tx of txs) {
-      const messages = tx.tx?.body?.messages || [];
-      const success = tx.code === 0;
-      const timestamp = tx.timestamp || "";
-      const txHash = tx.txhash || "";
-
-      for (const msg of messages) {
-        const typeUrl = msg["@type"] || "";
-
-        if (typeUrl === "/cosmos.bank.v1beta1.MsgSend") {
-          const coins = msg.amount || [];
-          const coin = coins.find((c: any) => c.denom === denom) || coins[0];
-          const micro = parseInt(coin?.amount || "0", 10);
-          const isSend = msg.from_address === address;
-          results.push({
-            type: isSend ? "send" : "receive",
-            txHash,
-            timestamp,
-            amount: (micro / 1_000_000).toFixed(2),
-            denom: coin?.denom || denom,
-            counterparty: isSend ? msg.to_address : msg.from_address,
-            success,
-          });
-        } else if (typeUrl === "/cosmos.staking.v1beta1.MsgDelegate") {
-          const coin = msg.amount || {};
-          const micro = parseInt(coin.amount || "0", 10);
-          results.push({
-            type: "delegate",
-            txHash,
-            timestamp,
-            amount: (micro / 1_000_000).toFixed(2),
-            denom: coin.denom || denom,
-            counterparty: msg.validator_address || "",
-            success,
-          });
-        } else if (typeUrl === "/cosmos.staking.v1beta1.MsgUndelegate") {
-          const coin = msg.amount || {};
-          const micro = parseInt(coin.amount || "0", 10);
-          results.push({
-            type: "undelegate",
-            txHash,
-            timestamp,
-            amount: (micro / 1_000_000).toFixed(2),
-            denom: coin.denom || denom,
-            counterparty: msg.validator_address || "",
-            success,
-          });
-        } else if (typeUrl === "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward") {
-          results.push({
-            type: "claim",
-            txHash,
-            timestamp,
-            amount: "",  // rewards amount is in events, not the message
-            denom,
-            counterparty: msg.validator_address || "",
-            success,
-          });
-        }
-      }
-
-      if (results.length >= limit) break;
+    for (const tx of [...senderTxs, ...receiverTxs]) {
+      const hash = tx.txhash || "";
+      if (seenHashes.has(hash)) continue;
+      seenHashes.add(hash);
+      results.push(...parseTx(tx));
     }
+
+    // Sort by timestamp descending (newest first)
+    results.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
 
     return results.slice(0, limit);
   } catch (err) {
