@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { connectLedger, tryAutoConnect, signWithLedger, disconnectLedger, type LedgerConnection } from "./ledger";
+import { connectLedger, signWithLedger, disconnectLedger, type LedgerConnection } from "./ledger";
 import { fetchBalance, getAccountInfo, getChainId, broadcastTx, getDenom, getPrefix, fetchStakingInfo, checkAddressHistory, simulateTx, fetchRecentSends, fetchTxHistory, type BalanceInfo, type ValidatorInfo, type DelegationInfo, type SimulateResult, type RecentSend, type TxHistoryItem } from "./client";
 import { buildAminoSignDoc, assembleTxBytes, toMicroAmount, buildDelegateSignDoc, buildUndelegateSignDoc, buildClaimRewardsSignDoc, assembleStakingTxBytes } from "./txBuilder";
 import { checkCompliance, type ComplianceResult } from "./compliance";
@@ -9,41 +9,6 @@ type AppTab = "send" | "stake";
 
 type Status = { type: "pass" | "fail" | "info" | "warn"; message: string } | null;
 type Network = "testnet" | "mainnet";
-
-// ── Recent Addresses (convenience only — NOT a trust source) ──
-interface RecentAddress {
-  address: string;
-  label?: string;
-  lastUsed: number;   // Date.now()
-  txCount: number;    // successful sends
-}
-
-const RECENT_ADDR_KEY = "tx_recent_addresses";
-const MAX_RECENT = 5;
-
-function loadRecentAddresses(): RecentAddress[] {
-  try {
-    const raw = localStorage.getItem(RECENT_ADDR_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as RecentAddress[];
-    return parsed.sort((a, b) => b.lastUsed - a.lastUsed).slice(0, MAX_RECENT);
-  } catch { return []; }
-}
-
-function saveRecentAddress(address: string): void {
-  const list = loadRecentAddresses();
-  const existing = list.find((a) => a.address === address);
-  if (existing) {
-    existing.lastUsed = Date.now();
-    existing.txCount += 1;
-  } else {
-    list.unshift({ address, lastUsed: Date.now(), txCount: 1 });
-  }
-  localStorage.setItem(
-    RECENT_ADDR_KEY,
-    JSON.stringify(list.sort((a, b) => b.lastUsed - a.lastUsed).slice(0, MAX_RECENT))
-  );
-}
 
 // Address safety status for the on-chain first-contact check
 type AddressSafety =
@@ -68,35 +33,9 @@ function getTimeAgo(isoTimestamp: string): string {
   return new Date(isoTimestamp).toLocaleDateString();
 }
 
-// ── Send Velocity Monitor (unusual activity detection) ──
-const VELOCITY_KEY = "tx_send_timestamps";
+// ── Send Velocity Monitor (in-memory only — no localStorage) ──
 const VELOCITY_WINDOW_MS = 10 * 60 * 1000; // 10 minute rolling window
 const VELOCITY_THRESHOLD = 3; // warn after 3+ sends in 10 min
-
-function recordSendTimestamp(): void {
-  try {
-    const raw = localStorage.getItem(VELOCITY_KEY);
-    const timestamps: number[] = raw ? JSON.parse(raw) : [];
-    timestamps.push(Date.now());
-    // Keep only timestamps within the rolling window
-    const cutoff = Date.now() - VELOCITY_WINDOW_MS;
-    const recent = timestamps.filter((t) => t > cutoff);
-    localStorage.setItem(VELOCITY_KEY, JSON.stringify(recent));
-  } catch { /* ignore */ }
-}
-
-function getRecentSendCount(): { count: number; windowMinutes: number } {
-  try {
-    const raw = localStorage.getItem(VELOCITY_KEY);
-    if (!raw) return { count: 0, windowMinutes: 10 };
-    const timestamps: number[] = JSON.parse(raw);
-    const cutoff = Date.now() - VELOCITY_WINDOW_MS;
-    const recent = timestamps.filter((t) => t > cutoff);
-    return { count: recent.length, windowMinutes: 10 };
-  } catch {
-    return { count: 0, windowMinutes: 10 };
-  }
-}
 
 // Transaction flow steps
 type TxStep = "idle" | "connect" | "review" | "sign" | "broadcast" | "done" | "failed";
@@ -220,7 +159,9 @@ function App() {
 
   // Address safety (on-chain first-contact detection)
   const [addressSafety, setAddressSafety] = useState<AddressSafety>(null);
-  const [recentAddresses, setRecentAddresses] = useState<RecentAddress[]>(loadRecentAddresses());
+
+  // Send velocity monitor (in-memory — resets on page reload, tamper-proof)
+  const [sendTimestamps, setSendTimestamps] = useState<number[]>([]);
 
   // Transaction simulation
   const [simResult, setSimResult] = useState<SimulateResult | null>(null);
@@ -365,42 +306,6 @@ function App() {
     setConnecting(false);
   }, [network, profile, log]);
 
-  // ── Auto-connect on page load (previously authorized Ledger) ──
-  useEffect(() => {
-    // Only attempt if not already connected and not currently connecting
-    if (ledger || connecting) return;
-
-    let cancelled = false;
-    const attempt = async () => {
-      try {
-        const prefix = getPrefix(network);
-        const connection = await tryAutoConnect(prefix);
-        if (cancelled || !connection) return;
-
-        setLedger(connection);
-        setTxStep("review");
-        setStatus({ type: "pass", message: "Ledger auto-connected" });
-
-        // Update profile
-        if (profile) {
-          const updated = { ...profile, lastLogin: new Date().toISOString(), lastAddress: connection.address };
-          saveProfile(updated);
-          setProfile(updated);
-        }
-
-        // Fetch balance
-        const bal = await fetchBalance(connection.address, network);
-        if (!cancelled) setBalance(bal);
-      } catch {
-        // Silent fail — user can always click Connect manually
-      }
-    };
-
-    attempt();
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Run once on mount only
-
   // ── Session Timeout (auto-disconnect after 10 min inactivity) ──
   const SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
@@ -527,13 +432,9 @@ function App() {
       setDelegations(info.delegations);
       setTotalRewards(info.totalRewards);
 
-      // Auto-select validator: prefer localStorage last-used, then first delegation
+      // Auto-select validator: prefer first delegation (no localStorage)
       if (!selectedValidator) {
-        const saved = localStorage.getItem("tx_last_validator");
-        const validAddrs = new Set(info.validators.map((v) => v.operatorAddress));
-        if (saved && validAddrs.has(saved)) {
-          setSelectedValidator(saved);
-        } else if (info.delegations.length > 0) {
+        if (info.delegations.length > 0) {
           setSelectedValidator(info.delegations[0].validatorAddress);
         }
       }
@@ -864,12 +765,9 @@ function App() {
           setTxStep("done");
           setStatus({ type: "pass", message: "Transaction broadcast successfully!" });
           setShowAgreement(false);
-          // Save to recent addresses (convenience only — not a trust source)
-          saveRecentAddress(recipient.trim());
-          setRecentAddresses(loadRecentAddresses());
           setAddressSafety(null);
-          // Record for velocity monitoring
-          recordSendTimestamp();
+          // Record for in-memory velocity monitoring (tamper-proof)
+          setSendTimestamps((prev) => [...prev, Date.now()]);
           setTimeout(() => handleRefreshBalance(), 3000);
         } else {
           setFailedAtStep("broadcast");
@@ -1379,15 +1277,16 @@ function App() {
                 return null;
               })()}
 
-              {/* ── Send Velocity Warning ── */}
+              {/* ── Send Velocity Warning (in-memory — tamper-proof) ── */}
               {(() => {
-                const velocity = getRecentSendCount();
-                if (velocity.count >= VELOCITY_THRESHOLD) {
+                const cutoff = Date.now() - VELOCITY_WINDOW_MS;
+                const recentCount = sendTimestamps.filter((t) => t > cutoff).length;
+                if (recentCount >= VELOCITY_THRESHOLD) {
                   return (
                     <div className="address-safety first-contact" style={{ borderColor: "rgba(245,158,11,.5)" }}>
                       <div className="address-safety-icon">⚡</div>
                       <div className="address-safety-text">
-                        <strong>Unusual activity — {velocity.count} transactions in the last {velocity.windowMinutes} minutes.</strong>
+                        <strong>Unusual activity — {recentCount} transactions in the last 10 minutes.</strong>
                         <br />Confirm this is intentional and your session hasn&apos;t been compromised.
                       </div>
                     </div>
@@ -1540,7 +1439,7 @@ function App() {
               value={selectedValidator}
               onChange={(e) => {
                 setSelectedValidator(e.target.value);
-                if (e.target.value) localStorage.setItem("tx_last_validator", e.target.value);
+                // No localStorage — user picks fresh each session
               }}
               style={{
                 width: "100%",
@@ -1761,13 +1660,19 @@ function App() {
             <span className="security-label">Session timeout</span>
             <span className="security-value">{Math.max(0, Math.ceil((10 * 60 * 1000 - (Date.now() - lastActivity)) / 60000))}m left</span>
           </div>
-          <div className="security-row">
-            <span className="security-icon" style={{ color: getRecentSendCount().count >= VELOCITY_THRESHOLD ? "#fbbf24" : "var(--green)" }}>
-              {getRecentSendCount().count >= VELOCITY_THRESHOLD ? "⚠" : "✓"}
-            </span>
-            <span className="security-label">Send velocity</span>
-            <span className="security-value">{getRecentSendCount().count} in 10m</span>
-          </div>
+          {(() => {
+            const cutoff = Date.now() - VELOCITY_WINDOW_MS;
+            const recentCount = sendTimestamps.filter((t) => t > cutoff).length;
+            return (
+              <div className="security-row">
+                <span className="security-icon" style={{ color: recentCount >= VELOCITY_THRESHOLD ? "#fbbf24" : "var(--green)" }}>
+                  {recentCount >= VELOCITY_THRESHOLD ? "⚠" : "✓"}
+                </span>
+                <span className="security-label">Send velocity</span>
+                <span className="security-value">{recentCount} in 10m</span>
+              </div>
+            );
+          })()}
           <div className="security-row">
             <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
             <span className="security-label">On-chain address verification</span>
