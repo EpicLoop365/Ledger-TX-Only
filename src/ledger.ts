@@ -54,7 +54,34 @@ function serializeHRP(hrp: string): Buffer {
 export async function connectLedger(
   prefix: string = "testcore"
 ): Promise<LedgerConnection> {
-  const transport = await TransportWebUSB.create();
+  // Try to reuse an already-paired Ledger device (avoids USB reset error)
+  let transport;
+  try {
+    const usb = (navigator as any).usb;
+    if (usb) {
+      const devices: any[] = await usb.getDevices();
+      const ledger = devices.find((d: any) => d.vendorId === 0x2c97);
+      if (ledger) {
+        transport = await TransportWebUSB.open(ledger);
+      }
+    }
+  } catch {
+    // Fallback to create() below
+  }
+  if (!transport) {
+    try {
+      transport = await TransportWebUSB.create();
+    } catch (e: any) {
+      // "Unable to reset the device" is a known Chrome WebUSB quirk — retry once
+      if (e?.message?.includes("reset")) {
+        console.warn("[Ledger] USB reset failed, retrying...");
+        await new Promise((r) => setTimeout(r, 600));
+        transport = await TransportWebUSB.create();
+      } else {
+        throw e;
+      }
+    }
+  }
   const app = new CosmosApp(transport as any);
 
   // Check app version

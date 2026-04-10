@@ -6,6 +6,10 @@
  */
 
 import { StargateClient } from "@cosmjs/stargate";
+import { decodeTxRaw } from "@cosmjs/proto-signing";
+import { MsgSend } from "cosmjs-types/cosmos/bank/v1beta1/tx";
+import { MsgDelegate, MsgUndelegate } from "cosmjs-types/cosmos/staking/v1beta1/tx";
+import { MsgWithdrawDelegatorReward } from "cosmjs-types/cosmos/distribution/v1beta1/tx";
 
 // Coreum endpoints
 const COREUM_TESTNET_RPC = "https://full-node.testnet-1.coreum.dev:26657";
@@ -44,6 +48,17 @@ export async function getClient(
   cachedClient = await StargateClient.connect(rpc);
   currentNetwork = network;
   return cachedClient;
+}
+
+/**
+ * Force reconnect on next getClient() call.
+ * Call after a broadcast to ensure fresh sequence/account data.
+ */
+export function resetClient(): void {
+  if (cachedClient) {
+    cachedClient.disconnect();
+  }
+  cachedClient = null;
 }
 
 /**
@@ -634,65 +649,182 @@ export async function fetchTxHistory(
   network: "testnet" | "mainnet" = "testnet",
   limit: number = 20
 ): Promise<TxHistoryItem[]> {
-  const bases = getRestBases(network);
   const denom = getDenom(network);
 
-  // Helper: try a single tx search query against a specific node
-  const tryQuery = async (base: string, event: string): Promise<any[]> => {
-    // Try with order_by, then without (some nodes reject it)
-    for (const withOrder of [true, false]) {
-      try {
-        const params: Record<string, string> = {
-          "events": event,
-          "pagination.limit": String(limit),
-        };
-        if (withOrder) params["order_by"] = "ORDER_BY_DESC";
-        const url = `${base}/cosmos/tx/v1beta1/txs?${new URLSearchParams(params)}`;
-        console.log(`[fetchTxHistory] ${base.slice(8, 40)}... event=${event.slice(0, 30)} order=${withOrder}`);
-        const res = await fetch(url);
-        if (!res.ok) {
-          console.warn(`[fetchTxHistory] HTTP ${res.status} from ${base.slice(8, 40)}`);
-          if (withOrder) continue; // retry without order_by
-          throw new Error(`HTTP ${res.status}`); // try next node
-        }
-        const data = await res.json();
-        const txs = data.tx_responses || [];
-        if (txs.length > 0) {
-          console.log(`[fetchTxHistory] Got ${txs.length} txs from ${base.slice(8, 40)}`);
-        }
-        return txs;
-      } catch (e) {
-        if (withOrder) continue;
-        throw e; // bubble up to try next node
-      }
-    }
-    return [];
-  };
-
-  // Try each REST node until one returns results
-  const queryTxs = async (event: string): Promise<any[]> => {
-    for (const base of bases) {
-      try {
-        const txs = await tryQuery(base, event);
-        if (txs.length > 0) return txs;
-      } catch {
-        continue; // try next node
-      }
-    }
-    return [];
-  };
-
-  // Parse a single tx_response into TxHistoryItem(s)
+  // Parse an IndexedTx from StargateClient.searchTx into TxHistoryItem(s)
   const parseTx = (tx: any): TxHistoryItem[] => {
     const items: TxHistoryItem[] = [];
-    const messages = tx.tx?.body?.messages || [];
     const success = tx.code === 0;
+    const txHash = tx.hash || "";
+    // searchTx returns height, not timestamp — we'll estimate from height later
     const timestamp = tx.timestamp || "";
-    const txHash = tx.txhash || "";
+
+    // Decode messages from the raw tx bytes
+    let messages: any[] = [];
+    try {
+      const decoded = decodeTxRaw(tx.tx);
+      messages = decoded.body.messages;
+    } catch {
+      return items;
+    }
 
     for (const msg of messages) {
-      const typeUrl = msg["@type"] || "";
+      const typeUrl = msg.typeUrl || "";
 
+      if (typeUrl === "/cosmos.bank.v1beta1.MsgSend") {
+        try {
+          const decoded = MsgSend.decode(msg.value);
+          const coin = decoded.amount.find((c: any) => c.denom === denom) || decoded.amount[0];
+          const micro = parseInt(coin?.amount || "0", 10);
+          const isSend = decoded.fromAddress === address;
+          items.push({
+            type: isSend ? "send" : "receive",
+            txHash, timestamp,
+            amount: (micro / 1_000_000).toFixed(2),
+            denom: coin?.denom || denom,
+            counterparty: isSend ? decoded.toAddress : decoded.fromAddress,
+            success,
+          });
+        } catch { /* skip unparseable */ }
+      } else if (typeUrl === "/cosmos.staking.v1beta1.MsgDelegate") {
+        try {
+          const decoded = MsgDelegate.decode(msg.value);
+          const micro = parseInt(decoded.amount?.amount || "0", 10);
+          items.push({
+            type: "delegate", txHash, timestamp,
+            amount: (micro / 1_000_000).toFixed(2),
+            denom: decoded.amount?.denom || denom,
+            counterparty: decoded.validatorAddress || "", success,
+          });
+        } catch { /* skip */ }
+      } else if (typeUrl === "/cosmos.staking.v1beta1.MsgUndelegate") {
+        try {
+          const decoded = MsgUndelegate.decode(msg.value);
+          const micro = parseInt(decoded.amount?.amount || "0", 10);
+          items.push({
+            type: "undelegate", txHash, timestamp,
+            amount: (micro / 1_000_000).toFixed(2),
+            denom: decoded.amount?.denom || denom,
+            counterparty: decoded.validatorAddress || "", success,
+          });
+        } catch { /* skip */ }
+      } else if (typeUrl === "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward") {
+        try {
+          const decoded = MsgWithdrawDelegatorReward.decode(msg.value);
+          // Reward amount isn't in the message — extract from tx_result events.
+          // Coreum Tendermint RPC returns event attributes as PLAIN TEXT (not base64).
+          let claimAmount = "";
+          const events = tx.events || [];
+          // ONLY look at withdraw_rewards events — coin_received would match the fee
+          for (const evt of events) {
+            if (evt.type !== "withdraw_rewards") continue;
+            const attrs = evt.attributes || [];
+            for (const attr of attrs) {
+              const key = attr.key || "";
+              const val = attr.value || "";
+              if (key === "amount" && val.includes(denom)) {
+                // Value format: "181274649ucore" or "139090ucore,500utestcore"
+                const parts = val.split(",");
+                for (const part of parts) {
+                  if (part.includes(denom)) {
+                    const micro = parseInt(part.replace(denom, "").trim(), 10);
+                    if (!isNaN(micro) && micro > 0) {
+                      // Accumulate if multiple withdraw_rewards events (multi-validator)
+                      const prev = claimAmount ? parseFloat(claimAmount) * 1_000_000 : 0;
+                      claimAmount = ((prev + micro) / 1_000_000).toFixed(4);
+                    }
+                  }
+                }
+              }
+            }
+          }
+          items.push({
+            type: "claim", txHash, timestamp,
+            amount: claimAmount,
+            denom,
+            counterparty: decoded.validatorAddress || "", success,
+          });
+        } catch { /* skip */ }
+      }
+    }
+    return items;
+  };
+
+  // ── Strategy: Direct Tendermint RPC tx_search with per_page (fast + paginated) ──
+  // Then fall back to REST /cosmos/tx/v1beta1/txs if RPC fails.
+
+  const rpc = network === "mainnet" ? COREUM_MAINNET_RPC : COREUM_TESTNET_RPC;
+  const perPage = Math.min(limit, 20);
+
+  // Helper: call Tendermint RPC tx_search with pagination
+  const rpcTxSearch = async (query: string): Promise<any[]> => {
+    const url = `${rpc}/tx_search?query=${encodeURIComponent(`"${query}"`)}&per_page=${perPage}&page=1&order_by="desc"`;
+    console.log(`[fetchTxHistory] RPC tx_search: ${query.slice(0, 50)}...`);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+    try {
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      return data.result?.txs || [];
+    } catch (err) {
+      clearTimeout(timeout);
+      throw err;
+    }
+  };
+
+  // Helper: parse a Tendermint RPC tx result into TxHistoryItem(s)
+  const parseRpcTx = (rpcTx: any): TxHistoryItem[] => {
+    const txBytes = rpcTx.tx ? Uint8Array.from(atob(rpcTx.tx), (c) => c.charCodeAt(0)) : null;
+    if (!txBytes) return [];
+    const code = parseInt(rpcTx.tx_result?.code || "0", 10);
+    const hash = rpcTx.hash || "";
+    const height = rpcTx.height || "0";
+    const timestamp = "";
+    // Pass tx_result events so parseTx can extract claim reward amounts
+    const events = rpcTx.tx_result?.events || [];
+    return parseTx({ tx: txBytes, code, hash, height, timestamp, events });
+  };
+
+  try {
+    const [senderRaw, recipientRaw] = await Promise.all([
+      rpcTxSearch(`message.sender='${address}'`).catch(() => []),
+      rpcTxSearch(`transfer.recipient='${address}'`).catch(() => []),
+    ]);
+
+    console.log(`[fetchTxHistory] RPC: ${senderRaw.length} sender, ${recipientRaw.length} recipient results`);
+
+    const results: TxHistoryItem[] = [];
+    const seenHashes = new Set<string>();
+
+    for (const rpcTx of [...senderRaw, ...recipientRaw]) {
+      const hash = rpcTx.hash || "";
+      if (seenHashes.has(hash)) continue;
+      seenHashes.add(hash);
+      results.push(...parseRpcTx(rpcTx));
+    }
+
+    // Sort by height descending (newest first)
+    if (results.length > 0) {
+      return results.slice(0, limit);
+    }
+  } catch (err) {
+    console.warn("[fetchTxHistory] RPC tx_search failed:", err);
+  }
+
+  // ── Fallback: REST /cosmos/tx/v1beta1/txs ──
+  console.log("[fetchTxHistory] Trying REST fallback...");
+  const bases = getRestBases(network);
+
+  const parseRestMessages = (tx: any, seenHashes: Set<string>): TxHistoryItem[] => {
+    const hash = tx.txhash || "";
+    if (seenHashes.has(hash)) return [];
+    seenHashes.add(hash);
+    const items: TxHistoryItem[] = [];
+    const messages = tx.tx?.body?.messages || [];
+    for (const msg of messages) {
+      const typeUrl = msg["@type"] || "";
       if (typeUrl === "/cosmos.bank.v1beta1.MsgSend") {
         const coins = msg.amount || [];
         const coin = coins.find((c: any) => c.denom === denom) || coins[0];
@@ -700,68 +832,59 @@ export async function fetchTxHistory(
         const isSend = msg.from_address === address;
         items.push({
           type: isSend ? "send" : "receive",
-          txHash, timestamp,
+          txHash: hash, timestamp: tx.timestamp || "",
           amount: (micro / 1_000_000).toFixed(2),
           denom: coin?.denom || denom,
           counterparty: isSend ? msg.to_address : msg.from_address,
-          success,
+          success: tx.code === 0,
         });
       } else if (typeUrl === "/cosmos.staking.v1beta1.MsgDelegate") {
-        const coin = msg.amount || {};
-        const micro = parseInt(coin.amount || "0", 10);
+        const micro = parseInt(msg.amount?.amount || "0", 10);
         items.push({
-          type: "delegate", txHash, timestamp,
-          amount: (micro / 1_000_000).toFixed(2),
-          denom: coin.denom || denom,
-          counterparty: msg.validator_address || "", success,
+          type: "delegate", txHash: hash, timestamp: tx.timestamp || "",
+          amount: (micro / 1_000_000).toFixed(2), denom,
+          counterparty: msg.validator_address || "", success: tx.code === 0,
         });
       } else if (typeUrl === "/cosmos.staking.v1beta1.MsgUndelegate") {
-        const coin = msg.amount || {};
-        const micro = parseInt(coin.amount || "0", 10);
+        const micro = parseInt(msg.amount?.amount || "0", 10);
         items.push({
-          type: "undelegate", txHash, timestamp,
-          amount: (micro / 1_000_000).toFixed(2),
-          denom: coin.denom || denom,
-          counterparty: msg.validator_address || "", success,
+          type: "undelegate", txHash: hash, timestamp: tx.timestamp || "",
+          amount: (micro / 1_000_000).toFixed(2), denom,
+          counterparty: msg.validator_address || "", success: tx.code === 0,
         });
       } else if (typeUrl === "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward") {
         items.push({
-          type: "claim", txHash, timestamp,
-          amount: "",
-          denom,
-          counterparty: msg.validator_address || "", success,
+          type: "claim", txHash: hash, timestamp: tx.timestamp || "",
+          amount: "", denom,
+          counterparty: msg.validator_address || "", success: tx.code === 0,
         });
       }
     }
     return items;
   };
 
-  try {
-    // Query outbound (sends, stakes, claims) and inbound (receives) in parallel
-    const [senderTxs, receiverTxs] = await Promise.all([
-      queryTxs(`message.sender='${address}'`),
-      queryTxs(`transfer.recipient='${address}'`),
-    ]);
+  for (const base of bases) {
+    try {
+      const params = new URLSearchParams({
+        "events": `message.sender='${address}'`,
+        "pagination.limit": String(limit),
+      });
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10_000);
+      const res = await fetch(`${base}/cosmos/tx/v1beta1/txs?${params}`, { signal: controller.signal });
+      clearTimeout(timeout);
+      if (!res.ok) continue;
+      const data = await res.json();
+      const txResponses = data.tx_responses || [];
+      if (txResponses.length === 0) continue;
 
-    console.log(`[fetchTxHistory] Got ${senderTxs.length} sender txs, ${receiverTxs.length} receiver txs`);
-
-    // Parse and merge
-    const results: TxHistoryItem[] = [];
-    const seenHashes = new Set<string>();
-
-    for (const tx of [...senderTxs, ...receiverTxs]) {
-      const hash = tx.txhash || "";
-      if (seenHashes.has(hash)) continue;
-      seenHashes.add(hash);
-      results.push(...parseTx(tx));
-    }
-
-    // Sort by timestamp descending (newest first)
-    results.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-
-    return results.slice(0, limit);
-  } catch (err) {
-    console.warn("fetchTxHistory error:", err);
-    return [];
+      const results: TxHistoryItem[] = [];
+      const seenHashes = new Set<string>();
+      for (const tx of txResponses) {
+        results.push(...parseRestMessages(tx, seenHashes));
+      }
+      if (results.length > 0) return results.slice(0, limit);
+    } catch { continue; }
   }
+  return [];
 }

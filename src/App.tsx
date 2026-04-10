@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import { connectLedger, signWithLedger, disconnectLedger, type LedgerConnection } from "./ledger";
-import { fetchBalance, getAccountInfo, getChainId, broadcastTx, getDenom, getPrefix, fetchStakingInfo, checkAddressHistory, simulateTx, fetchRecentSends, fetchTxHistory, type BalanceInfo, type ValidatorInfo, type DelegationInfo, type SimulateResult, type RecentSend, type TxHistoryItem } from "./client";
+import { fetchBalance, getAccountInfo, getChainId, broadcastTx, resetClient, getDenom, getPrefix, fetchStakingInfo, fetchValidators, checkAddressHistory, simulateTx, fetchTxHistory, type BalanceInfo, type ValidatorInfo, type DelegationInfo, type SimulateResult, type TxHistoryItem } from "./client";
 import { buildAminoSignDoc, assembleTxBytes, toMicroAmount, buildDelegateSignDoc, buildUndelegateSignDoc, buildClaimRewardsSignDoc, assembleStakingTxBytes } from "./txBuilder";
 import { checkCompliance, type ComplianceResult } from "./compliance";
 import { BUILD_INFO } from "./build-info";
@@ -95,6 +95,13 @@ function StepTimeline({ currentStep, failedAt }: { currentStep: TxStep; failedAt
   );
 }
 
+// Pinned address favorite
+interface AddressFavorite {
+  address: string;
+  label: string;
+  pinnedAt: number; // timestamp
+}
+
 // Anti-phishing profile stored in localStorage
 interface UserProfile {
   name: string;
@@ -102,6 +109,7 @@ interface UserProfile {
   accentColor: string;
   lastLogin: string;
   lastAddress?: string;
+  favorites?: AddressFavorite[];
 }
 
 const STORAGE_KEY = "txwallet_profile";
@@ -166,19 +174,27 @@ function App() {
   // Transaction simulation
   const [simResult, setSimResult] = useState<SimulateResult | null>(null);
 
-  // On-chain recent sends (loaded when Send tab opens)
-  const [onChainRecents, setOnChainRecents] = useState<RecentSend[]>([]);
-  const [recentsLoading, setRecentsLoading] = useState(false);
+  // On-chain recent sends (derived from txHistory — no separate REST call needed)
+  const [onChainRecents] = useState<{ recipient: string; amount: string; timestamp: string }[]>([]);
+
+  // Session transaction log (always accurate — built from this session's confirmed txs)
+  const [sessionTxs, setSessionTxs] = useState<{ hash: string; type: string; amount: string; detail: string; time: number }[]>([]);
 
   // Transaction history panel
   const [txHistory, setTxHistory] = useState<TxHistoryItem[]>([]);
   const [txHistoryLoading, setTxHistoryLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(true);
 
+  // Address favorites (pinned + labeled)
+  const [editingFavLabel, setEditingFavLabel] = useState<string | null>(null); // address being edited
+  const [editLabelText, setEditLabelText] = useState("");
+
   // Ledger verification popup
   const [showLedgerVerify, setShowLedgerVerify] = useState(false);
   const [ledgerVerifyType, setLedgerVerifyType] = useState<"send" | "delegate" | "undelegate" | "claim">("send");
   const [ledgerVerifyValidator, setLedgerVerifyValidator] = useState<string>("");
+  const [ledgerVerifyAmount, setLedgerVerifyAmount] = useState<string>("");
+  const [ledgerVerifyAcct, setLedgerVerifyAcct] = useState<{ accountNumber: number; sequence: number } | null>(null);
 
   // Session timeout (auto-disconnect after inactivity)
   const [lastActivity, setLastActivity] = useState<number>(Date.now());
@@ -207,6 +223,103 @@ function App() {
   // Domain check
   const currentDomain = window.location.hostname;
   const isDomainValid = currentDomain === VALID_DOMAIN || currentDomain === "localhost" || currentDomain === "127.0.0.1";
+
+  // ── Known Addresses — derived from on-chain tx history (tamper-proof whitelist) ──
+  const favorites = profile?.favorites || [];
+
+  const knownAddresses = useMemo(() => {
+    const addrMap = new Map<string, { address: string; label: string; lastAmount: string; txCount: number; sendCount: number; receiveCount: number; lastTime: number; pinned: boolean }>();
+    const prefix = getPrefix(network);
+    const favMap = new Map(favorites.map((f) => [f.address, f]));
+
+    // Extract unique wallet addresses from tx history (not validator addresses)
+    for (const tx of txHistory) {
+      const addr = tx.counterparty;
+      if (!addr || !addr.startsWith(prefix + "1")) continue;
+      if (addr.includes("valoper")) continue;
+
+      const existing = addrMap.get(addr);
+      const txTime = tx.timestamp ? new Date(tx.timestamp).getTime() : 0;
+      const isSend = tx.type === "send";
+      if (existing) {
+        existing.txCount += 1;
+        if (isSend) existing.sendCount += 1;
+        else existing.receiveCount += 1;
+        if (txTime > existing.lastTime) {
+          existing.lastAmount = tx.amount;
+          existing.lastTime = txTime;
+        }
+      } else {
+        const fav = favMap.get(addr);
+        addrMap.set(addr, {
+          address: addr,
+          label: fav?.label || "",
+          lastAmount: tx.amount,
+          txCount: 1,
+          sendCount: isSend ? 1 : 0,
+          receiveCount: isSend ? 0 : 1,
+          lastTime: txTime,
+          pinned: !!fav,
+        });
+      }
+    }
+
+    // Ensure all favorites appear even if not in recent txHistory
+    for (const fav of favorites) {
+      if (!addrMap.has(fav.address)) {
+        addrMap.set(fav.address, {
+          address: fav.address,
+          label: fav.label,
+          lastAmount: "",
+          txCount: 0,
+          sendCount: 0,
+          receiveCount: 0,
+          lastTime: fav.pinnedAt,
+          pinned: true,
+        });
+      }
+    }
+
+    // Sort: pinned first, then by most recent interaction
+    return Array.from(addrMap.values())
+      .sort((a, b) => {
+        if (a.pinned && !b.pinned) return -1;
+        if (!a.pinned && b.pinned) return 1;
+        return b.lastTime - a.lastTime;
+      })
+      .slice(0, 10);
+  }, [txHistory, favorites, network]);
+
+  // ── Favorites Handlers ──
+  const toggleFavorite = useCallback((address: string) => {
+    if (!profile) return;
+    const existing = (profile.favorites || []).find((f) => f.address === address);
+    let updated: AddressFavorite[];
+    if (existing) {
+      // Unpin
+      updated = (profile.favorites || []).filter((f) => f.address !== address);
+      setEditingFavLabel(null);
+    } else {
+      // Pin — start editing label
+      updated = [...(profile.favorites || []), { address, label: "", pinnedAt: Date.now() }];
+      setEditingFavLabel(address);
+      setEditLabelText("");
+    }
+    const newProfile = { ...profile, favorites: updated };
+    saveProfile(newProfile);
+    setProfile(newProfile);
+  }, [profile]);
+
+  const saveFavLabel = useCallback((address: string) => {
+    if (!profile) return;
+    const updated = (profile.favorites || []).map((f) =>
+      f.address === address ? { ...f, label: editLabelText.trim().slice(0, 20) } : f
+    );
+    const newProfile = { ...profile, favorites: updated };
+    saveProfile(newProfile);
+    setProfile(newProfile);
+    setEditingFavLabel(null);
+  }, [profile, editLabelText]);
 
   const log = useCallback((msg: string) => {
     const ts = new Date().toLocaleTimeString();
@@ -349,6 +462,16 @@ function App() {
     }
   }, [txStep, showLedgerVerify]);
 
+  // Fetch account info when verify popup opens (for Account + Sequence display)
+  useEffect(() => {
+    if (showLedgerVerify && ledger) {
+      setLedgerVerifyAcct(null);
+      getAccountInfo(ledger.address, network)
+        .then((info) => setLedgerVerifyAcct(info))
+        .catch(() => setLedgerVerifyAcct(null));
+    }
+  }, [showLedgerVerify, ledger, network]);
+
   // ── Release USB ──
   const handleReleaseUSB = useCallback(async () => {
     log("Release USB clicked...");
@@ -432,10 +555,13 @@ function App() {
       setDelegations(info.delegations);
       setTotalRewards(info.totalRewards);
 
-      // Auto-select validator: prefer first delegation (no localStorage)
+      // Auto-select validator: prefer largest delegation (no localStorage)
       if (!selectedValidator) {
         if (info.delegations.length > 0) {
-          setSelectedValidator(info.delegations[0].validatorAddress);
+          const sorted = [...info.delegations].sort(
+            (a, b) => parseInt(b.balance) - parseInt(a.balance)
+          );
+          setSelectedValidator(sorted[0].validatorAddress);
         }
       }
     } catch (err) {
@@ -451,23 +577,20 @@ function App() {
     }
   }, [activeTab, ledger, loadStakingInfo]);
 
-  // Load on-chain recent sends when switching to send tab
+  // Load validators + tx history as soon as wallet connects
+  // (validators needed for moniker resolution in tx history panel)
   useEffect(() => {
-    if (activeTab === "send" && ledger && onChainRecents.length === 0 && !recentsLoading) {
-      setRecentsLoading(true);
-      fetchRecentSends(ledger.address, network, 10)
-        .then((sends) => setOnChainRecents(sends))
-        .catch(() => {})
-        .finally(() => setRecentsLoading(false));
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeTab, ledger, network]);
+    if (!ledger) return;
 
-  // Load full tx history when wallet connects
-  useEffect(() => {
-    if (ledger && txHistory.length === 0 && !txHistoryLoading) {
+    // Load validators for moniker resolution (even before Stake tab)
+    if (validators.length === 0) {
+      fetchValidators(network).then((v) => setValidators(v)).catch(() => {});
+    }
+
+    // Load tx history (RPC-based — no REST 500 errors)
+    if (txHistory.length === 0 && !txHistoryLoading) {
       setTxHistoryLoading(true);
-      fetchTxHistory(ledger.address, network, 10)
+      fetchTxHistory(ledger.address, network, 7)
         .then((history) => setTxHistory(history))
         .catch(() => {})
         .finally(() => setTxHistoryLoading(false));
@@ -511,7 +634,9 @@ function App() {
       const result = await broadcastTx(txBytes, network);
 
       if (result.success) {
+        resetClient(); // Force fresh sequence on next signing operation
         setTxHash(result.txHash);
+        setSessionTxs((prev) => [{ hash: result.txHash, type: stakeAction, amount: `${stakeAmount} CORE`, detail: `${stakeAction === "delegate" ? "to" : "from"} ${validators.find(v => v.operatorAddress === selectedValidator)?.moniker || selectedValidator.slice(0, 12)}`, time: Date.now() }, ...prev].slice(0, 10));
         setTxStep("done");
         setStatus({ type: "pass", message: `${stakeAction === "delegate" ? "Stake" : "Unstake"} successful!` });
         setStakeAmount("");
@@ -605,7 +730,9 @@ function App() {
       const result = await broadcastTx(txBytes, network);
 
       if (result.success) {
+        resetClient(); // Force fresh sequence on next signing operation
         setTxHash(result.txHash);
+        setSessionTxs((prev) => [{ hash: result.txHash, type: "claim", amount: "rewards", detail: `from ${validators.find(v => v.operatorAddress === validatorAddress)?.moniker || validatorAddress.slice(0, 12)}`, time: Date.now() }, ...prev].slice(0, 10));
         setTxStep("done");
         setStatus({ type: "pass", message: "Rewards claimed!" });
         setTimeout(() => { handleRefreshBalance(); loadStakingInfo(); }, 3000);
@@ -761,7 +888,9 @@ function App() {
         console.log("[TX] Broadcast result:", JSON.stringify(result));
 
         if (result.success) {
+          resetClient(); // Force fresh sequence on next signing operation
           setTxHash(result.txHash);
+          setSessionTxs((prev) => [{ hash: result.txHash, type: "send", amount: `${amount} CORE`, detail: `to ${recipient.slice(0, 12)}...${recipient.slice(-4)}`, time: Date.now() }, ...prev].slice(0, 10));
           setTxStep("done");
           setStatus({ type: "pass", message: "Transaction broadcast successfully!" });
           setShowAgreement(false);
@@ -982,23 +1111,31 @@ function App() {
         <>
           <div className="card">
             <div className="section-label">Network</div>
-            <div className="network-toggle">
-              <button
-                className={`toggle-btn ${network === "testnet" ? "active" : ""}`}
-                onClick={() => handleNetworkSwitch("testnet")}
-                disabled={connecting || signing}
-                style={network === "testnet" ? { background: profile.accentColor } : {}}
-              >
-                Testnet
-              </button>
-              <button
-                className={`toggle-btn ${network === "mainnet" ? "active" : ""}`}
-                onClick={() => handleNetworkSwitch("mainnet")}
-                disabled={connecting || signing}
-                style={network === "mainnet" ? { background: profile.accentColor } : {}}
-              >
-                Mainnet
-              </button>
+            <div className="network-radio-group">
+              <label className={`network-radio ${network === "testnet" ? "active" : ""}`}>
+                <input
+                  type="radio"
+                  name="network"
+                  value="testnet"
+                  checked={network === "testnet"}
+                  onChange={() => handleNetworkSwitch("testnet")}
+                  disabled={connecting || signing}
+                />
+                <span className="network-radio-dot" style={network === "testnet" ? { borderColor: profile.accentColor, background: profile.accentColor } : {}} />
+                <span className="network-radio-text">Testnet</span>
+              </label>
+              <label className={`network-radio ${network === "mainnet" ? "active" : ""}`}>
+                <input
+                  type="radio"
+                  name="network"
+                  value="mainnet"
+                  checked={network === "mainnet"}
+                  onChange={() => handleNetworkSwitch("mainnet")}
+                  disabled={connecting || signing}
+                />
+                <span className="network-radio-dot" style={network === "mainnet" ? { borderColor: profile.accentColor, background: profile.accentColor } : {}} />
+                <span className="network-radio-text">Mainnet</span>
+              </label>
             </div>
           </div>
 
@@ -1090,40 +1227,88 @@ function App() {
         <div className="card card-enter">
           <div className="section-label">Send Transaction</div>
 
-          {/* ── Recent Sends (on-chain history — tamper-proof) ── */}
-          {recentsLoading && (
+          {/* ── Known Addresses — on-chain whitelist + user favorites ── */}
+          {txHistoryLoading && knownAddresses.length === 0 && (
             <div className="recent-addresses">
               <div className="recent-addresses-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span className="spinner" style={{ width: 10, height: 10 }} /> Loading send history from chain...
+                <span className="spinner" style={{ width: 10, height: 10 }} /> Loading address book from chain...
               </div>
             </div>
           )}
-          {!recentsLoading && onChainRecents.length > 0 && (
+          {knownAddresses.length > 0 && (
             <div className="recent-addresses">
-              <div className="recent-addresses-label">Recent Sends (on-chain)</div>
-              <div className="recent-addresses-chips">
-                {onChainRecents.slice(0, 5).map((rs) => (
-                  <button
-                    key={rs.txHash}
-                    type="button"
-                    className={`recent-chip ${recipient === rs.recipient ? "active" : ""}`}
-                    onClick={() => {
-                      setRecipient(rs.recipient);
-                      setComplianceResult(null);
-                      setTxHash(null);
-                      setShowAgreement(false);
-                      setAgreementChecked(false);
-                      setAddressSafety(null);
-                    }}
-                    title={`${rs.recipient}\n${rs.amount} CORE • ${rs.timestamp ? new Date(rs.timestamp).toLocaleDateString() : ""}`}
-                  >
-                    <span className="recent-chip-addr">
-                      {rs.recipient.slice(0, 8)}...{rs.recipient.slice(-6)}
-                    </span>
-                    <span className="recent-chip-count">{rs.amount}</span>
-                  </button>
+              <div className="recent-addresses-label">
+                <span style={{ marginRight: 4 }}>🛡️</span>Known Addresses <span style={{ color: "var(--muted)", fontWeight: 400, fontSize: ".65rem" }}>(tap ⭐ to pin &amp; label)</span>
+              </div>
+              <div className="fav-address-list">
+                {knownAddresses.map((ka) => (
+                  <div key={ka.address} className={`fav-address-row ${ka.pinned ? "pinned" : ""} ${recipient === ka.address ? "selected" : ""}`}>
+                    <button
+                      type="button"
+                      className={`fav-pin-btn ${ka.pinned ? "pinned" : ""}`}
+                      onClick={(e) => { e.stopPropagation(); toggleFavorite(ka.address); }}
+                      title={ka.pinned ? "Unpin" : "Pin as favorite"}
+                    >
+                      {ka.pinned ? "⭐" : "☆"}
+                    </button>
+                    <button
+                      type="button"
+                      className="fav-address-main"
+                      onClick={() => {
+                        setRecipient(ka.address);
+                        setComplianceResult(null);
+                        setTxHash(null);
+                        setShowAgreement(false);
+                        setAgreementChecked(false);
+                        setAddressSafety(null);
+                      }}
+                    >
+                      <span className="fav-address-top">
+                        {ka.pinned && ka.label ? (
+                          <span className="fav-label">{ka.label}</span>
+                        ) : null}
+                        <span className="fav-addr-text">{ka.address.slice(0, 10)}...{ka.address.slice(-6)}</span>
+                      </span>
+                      <span className="fav-address-stats">
+                        {ka.sendCount > 0 && <span className="fav-stat">↗ sent {ka.sendCount}×</span>}
+                        {ka.receiveCount > 0 && <span className="fav-stat">↙ recv {ka.receiveCount}×</span>}
+                        {ka.lastAmount && <span className="fav-stat">last: {ka.lastAmount} CORE</span>}
+                      </span>
+                    </button>
+                    {ka.pinned && (
+                      <button
+                        type="button"
+                        className="fav-edit-btn"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingFavLabel(editingFavLabel === ka.address ? null : ka.address);
+                          setEditLabelText(ka.label || "");
+                        }}
+                        title="Edit label"
+                      >
+                        ✏️
+                      </button>
+                    )}
+                  </div>
                 ))}
               </div>
+              {/* Inline label editor */}
+              {editingFavLabel && (
+                <div className="fav-label-editor">
+                  <input
+                    type="text"
+                    value={editLabelText}
+                    onChange={(e) => setEditLabelText(e.target.value.slice(0, 20))}
+                    placeholder="Label (e.g. Treasury, Cold)"
+                    maxLength={20}
+                    autoFocus
+                    onKeyDown={(e) => { if (e.key === "Enter") saveFavLabel(editingFavLabel); if (e.key === "Escape") setEditingFavLabel(null); }}
+                    className="fav-label-input"
+                  />
+                  <button type="button" className="fav-label-save" onClick={() => saveFavLabel(editingFavLabel)}>Save</button>
+                  <button type="button" className="fav-label-cancel" onClick={() => setEditingFavLabel(null)}>✕</button>
+                </div>
+              )}
             </div>
           )}
 
@@ -1307,6 +1492,7 @@ function App() {
               <button
                 className={`btn btn-primary ${signing ? "btn-signing" : ""}`}
                 onClick={() => {
+                  setTxStep("idle");
                   setLedgerVerifyType("send");
                   setShowLedgerVerify(true);
                 }}
@@ -1361,7 +1547,7 @@ function App() {
           {delegations.length > 0 && (
             <div style={{ marginBottom: 12 }}>
               <div className="section-label">My Delegations</div>
-              {delegations.map((d) => {
+              {delegations.filter((d) => parseInt(d.balance) >= 100_000_000 || parseInt(d.rewards) >= 100_000_000).map((d) => {
                 const balDisplay = (parseInt(d.balance) / 1_000_000).toFixed(2);
                 const rewDisplay = (parseInt(d.rewards) / 1_000_000).toFixed(4);
                 const hasRewards = parseInt(d.rewards) > 0;
@@ -1378,8 +1564,10 @@ function App() {
                       <button
                         className="btn-sm"
                         onClick={() => {
+                          setTxStep("idle");
                           setLedgerVerifyType("claim");
                           setLedgerVerifyValidator(d.validatorAddress);
+                          setLedgerVerifyAmount((parseInt(d.rewards) / 1_000_000).toFixed(4));
                           setShowLedgerVerify(true);
                         }}
                         disabled={signing}
@@ -1457,11 +1645,23 @@ function App() {
               }}
             >
               <option value="">⬇ Select a validator...</option>
-              {validators.map((v) => {
-                const isDelegated = delegations.some((d) => d.validatorAddress === v.operatorAddress);
+              {/* Sort: user's delegated validators first (by stake descending), then all others */}
+              {[...validators].sort((a, b) => {
+                const dA = delegations.find((d) => d.validatorAddress === a.operatorAddress);
+                const dB = delegations.find((d) => d.validatorAddress === b.operatorAddress);
+                const stakeA = dA ? parseInt(dA.balance) : 0;
+                const stakeB = dB ? parseInt(dB.balance) : 0;
+                // Delegated validators first, sorted by stake
+                if (stakeA > 0 && stakeB === 0) return -1;
+                if (stakeB > 0 && stakeA === 0) return 1;
+                if (stakeA > 0 && stakeB > 0) return stakeB - stakeA;
+                return 0; // preserve original order for non-delegated
+              }).map((v) => {
+                const del = delegations.find((d) => d.validatorAddress === v.operatorAddress);
+                const hasSignificantStake = del && parseInt(del.balance) >= 100_000_000;
                 return (
                   <option key={v.operatorAddress} value={v.operatorAddress}>
-                    {isDelegated ? "★ " : ""}{v.moniker} ({(parseFloat(v.commission) * 100).toFixed(0)}% fee)
+                    {hasSignificantStake ? "★ " : del ? "· " : ""}{v.moniker} ({(parseFloat(v.commission) * 100).toFixed(0)}% fee)
                   </option>
                 );
               })}
@@ -1526,6 +1726,7 @@ function App() {
           <button
             className="btn btn-primary"
             onClick={() => {
+              setTxStep("idle"); // Reset so popup doesn't auto-close
               setLedgerVerifyType(stakeAction);
               setShowLedgerVerify(true);
             }}
@@ -1591,30 +1792,15 @@ function App() {
 
           {showHistory && (
             <div className="tx-history-list">
-              {txHistoryLoading && (
+              {txHistoryLoading && sessionTxs.length === 0 && (
                 <div style={{ padding: 10, textAlign: "center", color: "var(--muted)", fontSize: ".75rem" }}>
                   <span className="spinner" style={{ width: 12, height: 12 }} /> Loading from chain...
                 </div>
               )}
-              {!txHistoryLoading && txHistory.length === 0 && ledger && (
-                <div style={{ padding: 10, textAlign: "center", fontSize: ".75rem" }}>
-                  <div style={{ color: "var(--muted)", marginBottom: 6 }}>
-                    No transactions loaded
-                  </div>
-                  <a
-                    href={`${explorerBase}?address=${ledger.address}`}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    style={{ color: "var(--accent)", fontSize: ".7rem" }}
-                  >
-                    View full history on Coreum Explorer ↗
-                  </a>
-                </div>
-              )}
-              {txHistory.map((tx, i) => {
+              {(() => {
                 const typeLabel: Record<string, string> = {
                   send: "Sent", receive: "Received", delegate: "Staked",
-                  undelegate: "Unstaked", claim: "Claimed", other: "Other"
+                  undelegate: "Unstaked", claim: "Claimed", other: "Tx"
                 };
                 const typeIcon: Record<string, string> = {
                   send: "↗", receive: "↙", delegate: "⬆",
@@ -1624,90 +1810,121 @@ function App() {
                   send: "#f87171", receive: "var(--green)", delegate: "#60a5fa",
                   undelegate: "#fbbf24", claim: "var(--green)", other: "var(--muted)"
                 };
-                const ago = tx.timestamp ? getTimeAgo(tx.timestamp) : "";
-                return (
-                  <div key={`${tx.txHash}-${i}`} className="tx-history-row">
-                    <span className="tx-history-icon" style={{ color: typeColor[tx.type] }}>
-                      {typeIcon[tx.type]}
-                    </span>
-                    <div className="tx-history-details">
-                      <div className="tx-history-type" style={{ color: typeColor[tx.type] }}>
-                        {typeLabel[tx.type] || tx.type}
-                        {tx.amount && <span className="tx-history-amount"> {tx.amount} CORE</span>}
+
+                const sessionItems = sessionTxs.map((s) => ({
+                  hash: s.hash,
+                  action: typeLabel[s.type] || s.type,
+                  amount: s.amount,
+                  detail: s.detail,
+                  icon: typeIcon[s.type] || "•",
+                  color: typeColor[s.type] || "var(--muted)",
+                  sortTime: s.time,
+                  ago: (() => {
+                    const mins = Math.floor((Date.now() - s.time) / 60000);
+                    if (mins < 1) return "just now";
+                    if (mins < 60) return `${mins}m ago`;
+                    const hrs = Math.floor(mins / 60);
+                    return `${hrs}h ago`;
+                  })(),
+                }));
+
+                // Resolve validator operator addresses to human-readable monikers
+                const resolveCounterparty = (tx: TxHistoryItem): string => {
+                  if (!tx.counterparty) return "";
+                  const prefix = tx.type === "send" ? "to" : tx.type === "receive" ? "from" : "with";
+                  // Check if counterparty is a validator address — resolve to moniker
+                  if (tx.counterparty.includes("valoper")) {
+                    const v = validators.find((val) => val.operatorAddress === tx.counterparty);
+                    if (v) return `${prefix} ${v.moniker}`;
+                  }
+                  return `${prefix} ${tx.counterparty.slice(0, 12)}...${tx.counterparty.slice(-4)}`;
+                };
+
+                const chainItems = txHistory.map((tx) => ({
+                  hash: tx.txHash,
+                  action: typeLabel[tx.type] || tx.type,
+                  amount: tx.amount ? `${tx.amount} CORE` : "",
+                  detail: resolveCounterparty(tx),
+                  icon: typeIcon[tx.type] || "•",
+                  color: typeColor[tx.type] || "var(--muted)",
+                  sortTime: tx.timestamp ? new Date(tx.timestamp).getTime() : 0,
+                  ago: tx.timestamp ? getTimeAgo(tx.timestamp) : "",
+                }));
+
+                const seen = new Set<string>();
+                const merged = [...sessionItems, ...chainItems]
+                  .sort((a, b) => b.sortTime - a.sortTime)
+                  .filter((item) => {
+                    if (seen.has(item.hash)) return false;
+                    seen.add(item.hash);
+                    return true;
+                  })
+                  .slice(0, 7);
+
+                if (merged.length === 0) {
+                  return (
+                    <div style={{ padding: 10, textAlign: "center", fontSize: ".75rem" }}>
+                      <div style={{ color: "var(--muted)", marginBottom: 6 }}>
+                        No transactions yet
                       </div>
-                      <div className="tx-history-meta">
-                        {tx.counterparty && (
-                          <span>{tx.counterparty.slice(0, 10)}...{tx.counterparty.slice(-4)}</span>
-                        )}
-                        {ago && <span className="tx-history-time">{ago}</span>}
-                      </div>
+                      {ledger && (
+                        <a
+                          href={`${explorerBase}?address=${ledger.address}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          style={{ color: "var(--accent)", fontSize: ".7rem" }}
+                        >
+                          View full history on Explorer ↗
+                        </a>
+                      )}
                     </div>
-                    <a
-                      href={`${explorerBase}?tx=${tx.txHash}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="tx-history-link"
-                      title="View on explorer"
-                    >
-                      ↗
-                    </a>
-                  </div>
+                  );
+                }
+
+                return (
+                  <>
+                    {merged.map((item, i) => (
+                      <a
+                        key={`${item.hash}-${i}`}
+                        href={`${explorerBase}?tx=${item.hash}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="tx-history-row"
+                        style={{ textDecoration: "none", color: "inherit", cursor: "pointer" }}
+                      >
+                        <span className="tx-history-icon" style={{ color: item.color }}>
+                          {item.icon}
+                        </span>
+                        <div className="tx-history-details">
+                          <div className="tx-history-type" style={{ color: item.color }}>
+                            {item.action} {item.amount}
+                          </div>
+                          <div className="tx-history-meta">
+                            {item.detail && <span className="tx-history-detail">{item.detail}</span>}
+                            {item.ago && <span className="tx-history-time">{item.ago}</span>}
+                          </div>
+                        </div>
+                        <span className="tx-history-link" title="View on explorer">↗</span>
+                      </a>
+                    ))}
+                    {ledger && (
+                      <a
+                        href={`${explorerBase}?address=${ledger.address}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="tx-history-footer-link"
+                      >
+                        View full history on Explorer ↗
+                      </a>
+                    )}
+                  </>
                 );
-              })}
+              })()}
             </div>
           )}
         </div>
 
-      {/* ── Security Status Card ── */}
-        <div className="card security-status">
-          <div className="security-status-title">Security Status</div>
-          <div className="security-row">
-            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
-            <span className="security-label">Ledger hardware-only signing</span>
-          </div>
-          <div className="security-row">
-            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
-            <span className="security-label">Session timeout</span>
-            <span className="security-value">{Math.max(0, Math.ceil((10 * 60 * 1000 - (Date.now() - lastActivity)) / 60000))}m left</span>
-          </div>
-          {(() => {
-            const cutoff = Date.now() - VELOCITY_WINDOW_MS;
-            const recentCount = sendTimestamps.filter((t) => t > cutoff).length;
-            return (
-              <div className="security-row">
-                <span className="security-icon" style={{ color: recentCount >= VELOCITY_THRESHOLD ? "#fbbf24" : "var(--green)" }}>
-                  {recentCount >= VELOCITY_THRESHOLD ? "⚠" : "✓"}
-                </span>
-                <span className="security-label">Send velocity</span>
-                <span className="security-value">{recentCount} in 10m</span>
-              </div>
-            );
-          })()}
-          <div className="security-row">
-            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
-            <span className="security-label">On-chain address verification</span>
-          </div>
-          <div className="security-row">
-            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
-            <span className="security-label">Transaction simulation</span>
-          </div>
-          <div className="security-row">
-            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
-            <span className="security-label">Cross-chain address detection</span>
-          </div>
-          <div className="security-row">
-            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
-            <span className="security-label">Open source verified build</span>
-          </div>
-          <div className="security-row">
-            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
-            <span className="security-label">Anti-phishing profile</span>
-          </div>
-          <div className="security-row">
-            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
-            <span className="security-label">Ledger verification popup</span>
-          </div>
-        </div>
+      {/* Security features enforced silently — no need to display static checklist */}
 
           </div>{/* end dashboard-right */}
         </div>
@@ -1726,82 +1943,55 @@ function App() {
               <strong> Verify every field matches exactly</strong> before pressing Approve.
             </div>
 
+            <div className="ledger-verify-screens-hint">
+              Tap the right button on your Ledger to advance through each screen:
+            </div>
+
             {ledgerVerifyType === "send" && (
               <div className="ledger-verify-fields">
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Chain</span>
-                  <span className="ledger-verify-value">{network === "mainnet" ? "coreum-mainnet-1" : "coreum-testnet-1"}</span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">From</span>
-                  <span className="ledger-verify-value">{ledger?.address}</span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">To</span>
-                  <span className="ledger-verify-value">{recipient}</span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Amount</span>
-                  <span className="ledger-verify-value highlight">{amount} CORE</span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Fee</span>
-                  <span className="ledger-verify-value">0.05 CORE</span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Memo</span>
-                  <span className="ledger-verify-value">Sent via TX Web Wallet</span>
-                </div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">1</span><span className="ledger-verify-label">Chain ID</span><span className="ledger-verify-value">{network === "mainnet" ? "coreum-mainnet-1" : "coreum-testnet-1"}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">2</span><span className="ledger-verify-label">Account</span><span className="ledger-verify-value">{ledgerVerifyAcct ? ledgerVerifyAcct.accountNumber : "..."}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">3</span><span className="ledger-verify-label">Sequence</span><span className="ledger-verify-value">{ledgerVerifyAcct ? ledgerVerifyAcct.sequence : "..."}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">4</span><span className="ledger-verify-label">Type</span><span className="ledger-verify-value">Send</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">5</span><span className="ledger-verify-label">From</span><span className="ledger-verify-value">{ledger?.address}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">6</span><span className="ledger-verify-label">To</span><span className="ledger-verify-value">{recipient}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">7</span><span className="ledger-verify-label">Amount</span><span className="ledger-verify-value highlight">{amount ? `${toMicroAmount(parseFloat(amount))} ${getDenom(network)}` : "0"} <span style={{ color: "var(--muted)", fontSize: ".65rem" }}>({amount} CORE)</span></span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">8</span><span className="ledger-verify-label">Memo</span><span className="ledger-verify-value">Sent via TX Web Wallet</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">9</span><span className="ledger-verify-label">Fee</span><span className="ledger-verify-value highlight">50000 {getDenom(network)} <span style={{ color: "var(--muted)", fontSize: ".65rem" }}>(0.05 CORE)</span></span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">10</span><span className="ledger-verify-label">Gas</span><span className="ledger-verify-value">200,000</span></div>
+                <div className="ledger-verify-field ledger-verify-approve"><span className="ledger-screen-num">✓</span><span className="ledger-verify-label">Approve</span><span className="ledger-verify-value">Press both buttons</span></div>
               </div>
             )}
 
             {(ledgerVerifyType === "delegate" || ledgerVerifyType === "undelegate") && (
               <div className="ledger-verify-fields">
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Type</span>
-                  <span className="ledger-verify-value">{ledgerVerifyType === "delegate" ? "Delegate (Stake)" : "Undelegate (Unstake)"}</span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Delegator</span>
-                  <span className="ledger-verify-value">{ledger?.address}</span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Validator</span>
-                  <span className="ledger-verify-value" style={{ fontSize: ".65rem" }}>
-                    {validators.find((v) => v.operatorAddress === selectedValidator)?.moniker || selectedValidator}
-                  </span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Amount</span>
-                  <span className="ledger-verify-value highlight">{stakeAmount} CORE</span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Fee</span>
-                  <span className="ledger-verify-value">0.05 CORE</span>
-                </div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">1</span><span className="ledger-verify-label">Chain ID</span><span className="ledger-verify-value">{network === "mainnet" ? "coreum-mainnet-1" : "coreum-testnet-1"}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">2</span><span className="ledger-verify-label">Account</span><span className="ledger-verify-value">{ledgerVerifyAcct ? ledgerVerifyAcct.accountNumber : "..."}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">3</span><span className="ledger-verify-label">Sequence</span><span className="ledger-verify-value">{ledgerVerifyAcct ? ledgerVerifyAcct.sequence : "..."}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">4</span><span className="ledger-verify-label">Type</span><span className="ledger-verify-value">{ledgerVerifyType === "delegate" ? "Delegate" : "Undelegate"}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">5</span><span className="ledger-verify-label">Delegator</span><span className="ledger-verify-value">{ledger?.address}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">6</span><span className="ledger-verify-label">Validator</span><span className="ledger-verify-value" style={{ fontSize: ".65rem" }}>{validators.find((v) => v.operatorAddress === selectedValidator)?.moniker || selectedValidator}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">7</span><span className="ledger-verify-label">Amount</span><span className="ledger-verify-value highlight">{stakeAmount ? `${toMicroAmount(parseFloat(stakeAmount))} ${getDenom(network)}` : "0"} <span style={{ color: "var(--muted)", fontSize: ".65rem" }}>({stakeAmount} CORE)</span></span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">8</span><span className="ledger-verify-label">Memo</span><span className="ledger-verify-value">{ledgerVerifyType === "delegate" ? "Staked" : "Unstaked"} via TX Web Wallet</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">9</span><span className="ledger-verify-label">Fee</span><span className="ledger-verify-value highlight">50000 {getDenom(network)} <span style={{ color: "var(--muted)", fontSize: ".65rem" }}>(0.05 CORE)</span></span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">10</span><span className="ledger-verify-label">Gas</span><span className="ledger-verify-value">200,000</span></div>
+                <div className="ledger-verify-field ledger-verify-approve"><span className="ledger-screen-num">✓</span><span className="ledger-verify-label">Approve</span><span className="ledger-verify-value">Press both buttons</span></div>
               </div>
             )}
 
             {ledgerVerifyType === "claim" && (
               <div className="ledger-verify-fields">
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Type</span>
-                  <span className="ledger-verify-value">Withdraw Rewards</span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Delegator</span>
-                  <span className="ledger-verify-value">{ledger?.address}</span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Validator</span>
-                  <span className="ledger-verify-value" style={{ fontSize: ".65rem" }}>
-                    {validators.find((v) => v.operatorAddress === ledgerVerifyValidator)?.moniker || ledgerVerifyValidator}
-                  </span>
-                </div>
-                <div className="ledger-verify-field">
-                  <span className="ledger-verify-label">Fee</span>
-                  <span className="ledger-verify-value">0.05 CORE</span>
-                </div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">1</span><span className="ledger-verify-label">Chain ID</span><span className="ledger-verify-value">{network === "mainnet" ? "coreum-mainnet-1" : "coreum-testnet-1"}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">2</span><span className="ledger-verify-label">Account</span><span className="ledger-verify-value">{ledgerVerifyAcct ? ledgerVerifyAcct.accountNumber : "..."}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">3</span><span className="ledger-verify-label">Sequence</span><span className="ledger-verify-value">{ledgerVerifyAcct ? ledgerVerifyAcct.sequence : "..."}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">4</span><span className="ledger-verify-label">Type</span><span className="ledger-verify-value">Withdraw Rewards</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">5</span><span className="ledger-verify-label">Delegator</span><span className="ledger-verify-value">{ledger?.address}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">6</span><span className="ledger-verify-label">Validator</span><span className="ledger-verify-value" style={{ fontSize: ".65rem" }}>{validators.find((v) => v.operatorAddress === ledgerVerifyValidator)?.moniker || ledgerVerifyValidator}</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">7</span><span className="ledger-verify-label">Reward</span><span className="ledger-verify-value highlight">~{ledgerVerifyAmount ? `${toMicroAmount(parseFloat(ledgerVerifyAmount))} ${getDenom(network)}` : "..."} <span style={{ color: "var(--muted)", fontSize: ".65rem" }}>({ledgerVerifyAmount} CORE)</span></span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">8</span><span className="ledger-verify-label">Memo</span><span className="ledger-verify-value">Claimed via TX Web Wallet</span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">9</span><span className="ledger-verify-label">Fee</span><span className="ledger-verify-value highlight">50000 {getDenom(network)} <span style={{ color: "var(--muted)", fontSize: ".65rem" }}>(0.05 CORE)</span></span></div>
+                <div className="ledger-verify-field"><span className="ledger-screen-num">10</span><span className="ledger-verify-label">Gas</span><span className="ledger-verify-value">200,000</span></div>
+                <div className="ledger-verify-field ledger-verify-approve"><span className="ledger-screen-num">✓</span><span className="ledger-verify-label">Approve</span><span className="ledger-verify-value">Press both buttons</span></div>
               </div>
             )}
 

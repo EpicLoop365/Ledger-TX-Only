@@ -86,31 +86,52 @@ body {
 }
 
 /* ── Security Status Card ── */
-.security-status {
-  padding: 12px 14px;
+.security-status-compact {
+  padding: 0;
 }
 
-.security-status-title {
+.security-summary-btn {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 10px 14px;
+  background: none;
+  border: none;
+  cursor: pointer;
   font-family: var(--mono);
-  font-size: .7rem;
-  font-weight: 700;
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: .04em;
-  margin-bottom: 8px;
+}
+
+.security-summary-btn:hover {
+  background: rgba(255,255,255,.02);
+}
+
+.security-summary-badge {
+  font-family: var(--mono);
+  font-size: .75rem;
+  font-weight: 600;
+  color: var(--text);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.security-detail-list {
+  padding: 4px 14px 10px;
+  border-top: 1px solid var(--border);
 }
 
 .security-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 4px 0;
+  padding: 3px 0;
   font-family: var(--mono);
-  font-size: .78rem;
+  font-size: .72rem;
 }
 
 .security-icon {
-  font-size: .9rem;
+  font-size: .85rem;
   flex-shrink: 0;
 }
 
@@ -122,7 +143,7 @@ body {
 .security-value {
   margin-left: auto;
   color: var(--muted);
-  font-size: .7rem;
+  font-size: .65rem;
 }
 
 /* ── Ledger Verification Popup ── */
@@ -181,13 +202,47 @@ body {
   margin-bottom: 16px;
 }
 
+.ledger-verify-screens-hint {
+  font-family: var(--mono);
+  font-size: .65rem;
+  color: var(--muted);
+  text-align: center;
+  margin-bottom: 8px;
+  opacity: .8;
+}
+
 .ledger-verify-field {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  padding: 8px 12px;
+  gap: 10px;
+  padding: 7px 12px;
   background: var(--bg);
   border-radius: 6px;
+}
+
+.ledger-verify-field.ledger-verify-approve {
+  background: rgba(52,211,153,.08);
+  border: 1px solid rgba(52,211,153,.25);
+}
+
+.ledger-screen-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(139,92,246,.15);
+  color: var(--accent);
+  font-family: var(--mono);
+  font-size: .6rem;
+  font-weight: 700;
+  flex-shrink: 0;
+}
+
+.ledger-verify-approve .ledger-screen-num {
+  background: rgba(52,211,153,.15);
+  color: var(--green);
 }
 
 .ledger-verify-label {
@@ -197,6 +252,7 @@ body {
   text-transform: uppercase;
   letter-spacing: .03em;
   flex-shrink: 0;
+  min-width: 70px;
 }
 
 .ledger-verify-value {
@@ -205,7 +261,7 @@ body {
   color: var(--text);
   text-align: right;
   word-break: break-all;
-  max-width: 70%;
+  flex: 1;
 }
 
 .ledger-verify-value.highlight {
@@ -268,22 +324,22 @@ body {
 /* ── Header ── */
 .header {
   text-align: center;
-  margin-bottom: 10px;
+  margin-bottom: 6px;
 }
 
 .header h1 {
-  font-size: 1.5rem;
+  font-size: 1.3rem;
   font-weight: 800;
   letter-spacing: -.03em;
-  margin-bottom: 2px;
+  margin-bottom: 1px;
 }
 
 .header .subtitle {
   font-family: var(--mono);
-  font-size: .62rem;
+  font-size: .58rem;
   color: var(--muted);
   letter-spacing: .04em;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 /* ── Anti-Phishing Banner ── */
@@ -291,7 +347,7 @@ body {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 10px 14px;
+  padding: 8px 14px;
   text-align: left;
   display: flex;
   align-items: center;
@@ -443,18 +499,18 @@ body {
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 12px;
-  padding: 16px 20px;
-  margin-bottom: 10px;
+  padding: 12px 18px;
+  margin-bottom: 8px;
 }
 
 /* Section label */
 .section-label {
-  font-size: .62rem;
+  font-size: .6rem;
   font-weight: 600;
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: .08em;
-  margin-bottom: 8px;
+  margin-bottom: 6px;
 }
 
 /* ── Network Toggle ── */
@@ -495,11 +551,73 @@ body {
   color: var(--text);
 }
 
+/* ── Network Radio Buttons ── */
+.network-radio-group {
+  display: flex;
+  gap: 24px;
+  padding: 4px 0;
+}
+
+.network-radio {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-family: var(--mono);
+  font-size: .78rem;
+  color: var(--muted);
+  transition: color .2s;
+}
+
+.network-radio.active {
+  color: var(--text);
+}
+
+.network-radio input[type="radio"] {
+  display: none;
+}
+
+.network-radio-dot {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  background: transparent;
+  transition: all .2s;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.network-radio.active .network-radio-dot::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.network-radio-text {
+  font-weight: 600;
+  letter-spacing: .02em;
+}
+
+.network-radio input:disabled + .network-radio-dot {
+  opacity: .5;
+}
+
+.network-radio:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: .5;
+}
+
 /* ── Buttons ── */
 .btn {
   display: block;
   width: 100%;
-  padding: 11px 20px;
+  padding: 10px 18px;
   border: none;
   border-radius: 10px;
   font-family: var(--mono);
@@ -944,10 +1062,175 @@ body {
   font-weight: 500;
 }
 
-.recent-chip-count {
+.recent-chip-count,
+.recent-chip-meta {
   font-size: .62rem;
   color: var(--muted);
   font-weight: 600;
+}
+
+/* ── Favorites Address List ── */
+.fav-address-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 4px;
+}
+
+.fav-address-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  transition: all .15s;
+}
+
+.fav-address-row:hover {
+  background: rgba(52,211,153,.04);
+  border-color: rgba(52,211,153,.15);
+}
+
+.fav-address-row.pinned {
+  background: rgba(251,191,36,.04);
+  border-color: rgba(251,191,36,.12);
+}
+
+.fav-address-row.selected {
+  border-color: var(--green);
+  background: rgba(52,211,153,.08);
+}
+
+.fav-pin-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: .85rem;
+  padding: 2px;
+  opacity: .4;
+  transition: opacity .15s;
+  flex-shrink: 0;
+}
+
+.fav-pin-btn:hover,
+.fav-pin-btn.pinned {
+  opacity: 1;
+}
+
+.fav-address-main {
+  flex: 1;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  padding: 2px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.fav-address-top {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: .78rem;
+  color: var(--text);
+}
+
+.fav-label {
+  font-weight: 700;
+  color: var(--accent);
+  font-size: .72rem;
+  flex-shrink: 0;
+}
+
+.fav-addr-text {
+  color: var(--muted);
+  font-size: .72rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fav-address-row.pinned .fav-addr-text {
+  font-size: .65rem;
+}
+
+.fav-address-stats {
+  display: flex;
+  gap: 8px;
+  font-size: .6rem;
+  color: var(--muted);
+  font-family: var(--mono);
+}
+
+.fav-stat {
+  opacity: .7;
+}
+
+.fav-edit-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: .7rem;
+  padding: 2px 4px;
+  opacity: .3;
+  transition: opacity .15s;
+  flex-shrink: 0;
+}
+
+.fav-edit-btn:hover {
+  opacity: 1;
+}
+
+.fav-label-editor {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--border);
+}
+
+.fav-label-input {
+  flex: 1;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-family: var(--mono);
+  font-size: .75rem;
+  color: var(--text);
+  outline: none;
+}
+
+.fav-label-input:focus {
+  border-color: var(--green);
+}
+
+.fav-label-save {
+  background: var(--green);
+  color: var(--bg);
+  border: none;
+  border-radius: 4px;
+  padding: 4px 10px;
+  font-size: .7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.fav-label-cancel {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: .8rem;
+  padding: 2px 4px;
 }
 
 /* ── Address Safety Banners (on-chain first-contact detection) ── */
@@ -1233,8 +1516,8 @@ body {
 /* ── Footer ── */
 .footer {
   text-align: center;
-  margin-top: 12px;
-  font-size: .58rem;
+  margin-top: 6px;
+  font-size: .55rem;
   color: var(--muted);
   font-family: var(--mono);
 }
@@ -1250,8 +1533,8 @@ body {
   align-items: center;
   justify-content: center;
   gap: 0;
-  padding: 10px 8px;
-  margin-bottom: 10px;
+  padding: 8px 8px;
+  margin-bottom: 6px;
   background: var(--bg2);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -1440,6 +1723,10 @@ body {
   border-bottom: 1px solid rgba(255,255,255,.04);
 }
 
+.tx-history-row:hover {
+  background: rgba(255,255,255,.04);
+  border-radius: 6px;
+}
 .tx-history-row:last-child {
   border-bottom: none;
 }
@@ -1476,9 +1763,31 @@ body {
   margin-top: 2px;
 }
 
+.tx-history-detail {
+  color: var(--muted);
+  opacity: .85;
+}
+
 .tx-history-time {
   color: var(--muted);
-  opacity: .7;
+  opacity: .6;
+}
+
+.tx-history-footer-link {
+  display: block;
+  text-align: center;
+  padding: 8px 4px;
+  font-family: var(--mono);
+  font-size: .65rem;
+  color: var(--accent);
+  text-decoration: none;
+  opacity: .8;
+  border-top: 1px solid rgba(255,255,255,.04);
+  margin-top: 4px;
+}
+
+.tx-history-footer-link:hover {
+  opacity: 1;
 }
 
 .tx-history-link {
@@ -1594,18 +1903,18 @@ body {
 
 /* ── Build Verification Badge ── */
 .build-badge {
-  margin-top: 12px;
+  margin-top: 8px;
   background: var(--bg2);
   border: 1px solid rgba(52,211,153,.15);
   border-radius: 10px;
-  padding: 12px 16px;
+  padding: 10px 14px;
 }
 
 .build-badge-header {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 8px;
+  margin-bottom: 4px;
 }
 
 .build-badge-icon {
@@ -1663,8 +1972,8 @@ a.build-badge-value:hover {
 }
 
 .build-badge-verify {
-  margin-top: 8px;
-  padding: 6px 10px;
+  margin-top: 4px;
+  padding: 4px 10px;
   background: var(--bg);
   border-radius: 6px;
   text-align: center;
