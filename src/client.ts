@@ -150,6 +150,105 @@ export async function broadcastTx(
 }
 
 // ---------------------------------------------------------------------------
+// Transaction Simulation
+// ---------------------------------------------------------------------------
+
+export interface SimulateResult {
+  success: boolean;
+  gasUsed: number;
+  gasWanted: number;
+  error?: string;
+}
+
+/**
+ * Simulate a transaction before signing to estimate gas and catch errors.
+ * Uses the Cosmos SDK /cosmos/tx/v1beta1/simulate endpoint.
+ * Requires the sender's public key + sequence for the signer_info
+ * (Cosmos SDK requires at least one signer even for simulation).
+ */
+export async function simulateTx(
+  fromAddress: string,
+  toAddress: string,
+  amount: string,  // micro amount as string
+  denom: string,
+  network: "testnet" | "mainnet" = "testnet",
+  publicKey?: Uint8Array,
+  sequence?: number
+): Promise<SimulateResult> {
+  const base = network === "mainnet" ? MAINNET_REST : TESTNET_REST;
+
+  // Base64-encode the public key for the REST API
+  const pubKeyB64 = publicKey
+    ? btoa(String.fromCharCode(...publicKey))
+    : "";
+
+  // Build a Cosmos SDK tx body with proper signer_info for simulation
+  const simulateBody = {
+    tx_bytes: "",
+    tx: {
+      body: {
+        messages: [
+          {
+            "@type": "/cosmos.bank.v1beta1.MsgSend",
+            from_address: fromAddress,
+            to_address: toAddress,
+            amount: [{ denom, amount }],
+          },
+        ],
+        memo: "Sent via TX Web Wallet",
+      },
+      auth_info: {
+        signer_infos: pubKeyB64 ? [
+          {
+            public_key: {
+              "@type": "/cosmos.crypto.secp256k1.PubKey",
+              key: pubKeyB64,
+            },
+            mode_info: { single: { mode: "SIGN_MODE_LEGACY_AMINO_JSON" } },
+            sequence: String(sequence ?? 0),
+          },
+        ] : [],
+        fee: { amount: [{ denom, amount: "50000" }], gas_limit: "200000" },
+      },
+      // One empty signature per signer (required by simulate)
+      signatures: pubKeyB64 ? [""] : [],
+    },
+  };
+
+  try {
+    const res = await fetch(`${base}/cosmos/tx/v1beta1/simulate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(simulateBody),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok || data.code) {
+      return {
+        success: false,
+        gasUsed: 0,
+        gasWanted: 0,
+        error: data.message || data.error || `Simulation failed (HTTP ${res.status})`,
+      };
+    }
+
+    return {
+      success: true,
+      gasUsed: parseInt(data.gas_info?.gas_used || "0", 10),
+      gasWanted: parseInt(data.gas_info?.gas_wanted || "0", 10),
+    };
+  } catch (err) {
+    return {
+      success: false,
+      gasUsed: 0,
+      gasWanted: 0,
+      error: (err as Error).message,
+    };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Staking REST API
 // ---------------------------------------------------------------------------
 
@@ -339,5 +438,251 @@ export async function fetchStakingInfo(
   } catch (err) {
     console.error("fetchStakingInfo error:", err);
     return { validators: [], delegations: [], totalRewards: "0" };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Address History — on-chain first-contact detection
+// ---------------------------------------------------------------------------
+
+export interface AddressHistory {
+  /** True if at least one prior send from `sender` to `recipient` exists on-chain */
+  hasPriorSends: boolean;
+  /** Number of prior send txs found (capped at pagination limit) */
+  sendCount: number;
+}
+
+/**
+ * Query the chain for prior transfer events from sender → recipient.
+ * Uses the Cosmos tx search endpoint with transfer module events.
+ * Returns quickly — we only need to know if count > 0.
+ */
+export async function checkAddressHistory(
+  sender: string,
+  recipient: string,
+  network: "testnet" | "mainnet" = "testnet"
+): Promise<AddressHistory> {
+  const base = getRestBase(network);
+
+  // Cosmos SDK tx search with transfer events
+  // We only need 1 result to prove prior contact — keep pagination tiny for speed
+  const params = new URLSearchParams({
+    "events": `transfer.sender='${sender}'`,
+    "pagination.limit": "1",
+    "order_by": "ORDER_BY_DESC",
+  });
+
+  // The Cosmos tx search API requires separate `events` params for AND logic,
+  // but URLSearchParams merges them. Use manual URL construction.
+  const url = `${base}/cosmos/tx/v1beta1/txs?` +
+    `events=transfer.sender%3D%27${sender}%27&` +
+    `events=transfer.recipient%3D%27${recipient}%27&` +
+    `pagination.limit=1&order_by=ORDER_BY_DESC`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.warn(`checkAddressHistory: HTTP ${res.status}`);
+      // On network error, fail open — don't block sends, just skip the warning
+      return { hasPriorSends: false, sendCount: 0 };
+    }
+    const data = await res.json();
+    const total = parseInt(data.pagination?.total || "0", 10);
+    return {
+      hasPriorSends: total > 0,
+      sendCount: total,
+    };
+  } catch (err) {
+    console.warn("checkAddressHistory error:", err);
+    // Fail open — network issues shouldn't block transactions
+    return { hasPriorSends: false, sendCount: 0 };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Recent Sends — on-chain tx history for the send tab
+// ---------------------------------------------------------------------------
+
+export interface RecentSend {
+  recipient: string;
+  amount: string;     // human-readable (e.g. "150.50")
+  denom: string;
+  txHash: string;
+  timestamp: string;  // ISO string or block time
+}
+
+/**
+ * Fetch the last N unique recipients this wallet has sent to,
+ * by querying the Cosmos tx search endpoint for outbound transfers.
+ * Returns deduplicated by recipient, most recent first.
+ */
+export async function fetchRecentSends(
+  sender: string,
+  network: "testnet" | "mainnet" = "testnet",
+  limit: number = 10
+): Promise<RecentSend[]> {
+  const base = getRestBase(network);
+  const denom = getDenom(network);
+
+  // Query recent outbound transfers from this sender
+  const url = `${base}/cosmos/tx/v1beta1/txs?` +
+    `events=transfer.sender%3D%27${sender}%27&` +
+    `pagination.limit=${limit}&order_by=ORDER_BY_DESC`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) {
+      console.warn(`fetchRecentSends: HTTP ${res.status}`);
+      return [];
+    }
+    const data = await res.json();
+    const txs = data.tx_responses || [];
+
+    const seen = new Set<string>();
+    const results: RecentSend[] = [];
+
+    for (const tx of txs) {
+      // Parse MsgSend from the tx body
+      const messages = tx.tx?.body?.messages || [];
+      for (const msg of messages) {
+        if (msg["@type"] === "/cosmos.bank.v1beta1.MsgSend" && msg.from_address === sender) {
+          const recipient = msg.to_address || "";
+          if (!recipient || seen.has(recipient)) continue;
+          seen.add(recipient);
+
+          // Extract amount
+          const coins = msg.amount || [];
+          const coin = coins.find((c: any) => c.denom === denom) || coins[0];
+          const microAmt = parseInt(coin?.amount || "0", 10);
+          const humanAmt = (microAmt / 1_000_000).toFixed(2);
+
+          results.push({
+            recipient,
+            amount: humanAmt,
+            denom: coin?.denom || denom,
+            txHash: tx.txhash || "",
+            timestamp: tx.timestamp || "",
+          });
+
+          if (results.length >= 5) break;
+        }
+      }
+      if (results.length >= 5) break;
+    }
+
+    return results;
+  } catch (err) {
+    console.warn("fetchRecentSends error:", err);
+    return [];
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Full Transaction History — sends, stakes, claims for the history panel
+// ---------------------------------------------------------------------------
+
+export type TxType = "send" | "receive" | "delegate" | "undelegate" | "claim" | "other";
+
+export interface TxHistoryItem {
+  type: TxType;
+  txHash: string;
+  timestamp: string;
+  amount: string;      // human-readable
+  denom: string;
+  counterparty: string; // recipient for sends, validator for stakes
+  success: boolean;
+}
+
+/**
+ * Fetch recent transactions for a wallet address (all types).
+ * Queries the tx search endpoint for any tx involving this address as sender.
+ */
+export async function fetchTxHistory(
+  address: string,
+  network: "testnet" | "mainnet" = "testnet",
+  limit: number = 10
+): Promise<TxHistoryItem[]> {
+  const base = getRestBase(network);
+  const denom = getDenom(network);
+
+  // Query all txs where this address is the sender (covers sends, stakes, claims)
+  const url = `${base}/cosmos/tx/v1beta1/txs?` +
+    `events=message.sender%3D%27${address}%27&` +
+    `pagination.limit=${limit}&order_by=ORDER_BY_DESC`;
+
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = await res.json();
+    const txs = data.tx_responses || [];
+    const results: TxHistoryItem[] = [];
+
+    for (const tx of txs) {
+      const messages = tx.tx?.body?.messages || [];
+      const success = tx.code === 0;
+      const timestamp = tx.timestamp || "";
+      const txHash = tx.txhash || "";
+
+      for (const msg of messages) {
+        const typeUrl = msg["@type"] || "";
+
+        if (typeUrl === "/cosmos.bank.v1beta1.MsgSend") {
+          const coins = msg.amount || [];
+          const coin = coins.find((c: any) => c.denom === denom) || coins[0];
+          const micro = parseInt(coin?.amount || "0", 10);
+          const isSend = msg.from_address === address;
+          results.push({
+            type: isSend ? "send" : "receive",
+            txHash,
+            timestamp,
+            amount: (micro / 1_000_000).toFixed(2),
+            denom: coin?.denom || denom,
+            counterparty: isSend ? msg.to_address : msg.from_address,
+            success,
+          });
+        } else if (typeUrl === "/cosmos.staking.v1beta1.MsgDelegate") {
+          const coin = msg.amount || {};
+          const micro = parseInt(coin.amount || "0", 10);
+          results.push({
+            type: "delegate",
+            txHash,
+            timestamp,
+            amount: (micro / 1_000_000).toFixed(2),
+            denom: coin.denom || denom,
+            counterparty: msg.validator_address || "",
+            success,
+          });
+        } else if (typeUrl === "/cosmos.staking.v1beta1.MsgUndelegate") {
+          const coin = msg.amount || {};
+          const micro = parseInt(coin.amount || "0", 10);
+          results.push({
+            type: "undelegate",
+            txHash,
+            timestamp,
+            amount: (micro / 1_000_000).toFixed(2),
+            denom: coin.denom || denom,
+            counterparty: msg.validator_address || "",
+            success,
+          });
+        } else if (typeUrl === "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward") {
+          results.push({
+            type: "claim",
+            txHash,
+            timestamp,
+            amount: "",  // rewards amount is in events, not the message
+            denom,
+            counterparty: msg.validator_address || "",
+            success,
+          });
+        }
+      }
+
+      if (results.length >= limit) break;
+    }
+
+    return results.slice(0, limit);
+  } catch (err) {
+    console.warn("fetchTxHistory error:", err);
+    return [];
   }
 }

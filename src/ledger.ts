@@ -218,6 +218,116 @@ function derToFixed(derSig: Uint8Array): Uint8Array {
 }
 
 /**
+ * Try to auto-reconnect to a previously authorized Ledger device.
+ * Uses navigator.usb.getDevices() which returns devices the user
+ * has already granted permission to — no user gesture required.
+ * Returns null if no authorized device is found or connection fails.
+ */
+export async function tryAutoConnect(
+  prefix: string = "testcore"
+): Promise<LedgerConnection | null> {
+  try {
+    // Check if WebUSB is available
+    const usb = (navigator as any).usb;
+    if (!usb?.getDevices) return null;
+
+    // Get previously authorized devices (no user gesture needed)
+    const devices: any[] = await usb.getDevices();
+    const ledgerDevice = devices.find(
+      (d: any) => d.vendorId === 0x2c97 // Ledger vendor ID
+    );
+
+    if (!ledgerDevice) return null;
+
+    console.log("[Ledger] Found previously authorized device, auto-connecting...");
+
+    // Release any stale USB handle from a previous session
+    if (ledgerDevice.opened) {
+      console.log("[Ledger] Device has stale handle, closing first...");
+      try {
+        await ledgerDevice.close();
+      } catch (e) {
+        console.log("[Ledger] Stale close failed (expected):", (e as Error).message);
+      }
+      // Brief pause to let the USB stack settle
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    // Open transport using the already-authorized device
+    let transport;
+    try {
+      transport = await TransportWebUSB.open(ledgerDevice);
+    } catch (openErr) {
+      // If open fails, try one more time after a reset attempt
+      console.log("[Ledger] First open failed, retrying after reset...");
+      try {
+        await ledgerDevice.open();
+        await ledgerDevice.close();
+      } catch { /* ignore */ }
+      await new Promise((r) => setTimeout(r, 500));
+      transport = await TransportWebUSB.open(ledgerDevice);
+    }
+    const app = new CosmosApp(transport as any);
+
+    // Check app version to verify Cosmos app is open
+    try {
+      const versionResponse = await transport.send(CLA, 0x00, 0, 0);
+      const major = versionResponse[1];
+      const minor = versionResponse[2];
+      const patch = versionResponse[3];
+      console.log(`[Ledger] Auto-connect: Cosmos app version: ${major}.${minor}.${patch}`);
+    } catch {
+      // Cosmos app not open — close transport and bail
+      console.log("[Ledger] Auto-connect: Cosmos app not open, skipping");
+      await transport.close();
+      return null;
+    }
+
+    // Get address
+    let response: any;
+    try {
+      response = await app.getAddressAndPubKey(COREUM_PATH, prefix);
+    } catch {
+      try {
+        response = await app.getAddressAndPubKey(COREUM_PATH, "cosmos");
+      } catch {
+        await transport.close();
+        return null;
+      }
+    }
+
+    const returnCode = response.return_code ?? response.returnCode;
+    if (returnCode && returnCode !== 0x9000) {
+      await transport.close();
+      return null;
+    }
+
+    const address = response.bech32_address ?? response.address ?? "";
+    const pk = response.compressed_pk ?? response.compressedPk ?? response.publicKey;
+
+    let publicKey: Uint8Array;
+    if (pk instanceof Uint8Array) {
+      publicKey = new Uint8Array(pk);
+    } else if (pk?.buffer) {
+      publicKey = new Uint8Array(pk.buffer.slice(pk.byteOffset, pk.byteOffset + pk.byteLength));
+    } else {
+      publicKey = new Uint8Array();
+    }
+
+    if (!address) {
+      await transport.close();
+      return null;
+    }
+
+    console.log(`[Ledger] Auto-connected: ${address}`);
+    return { transport, app, address, publicKey, prefix };
+  } catch (err) {
+    console.log("[Ledger] Auto-connect failed (silent):", (err as Error).message);
+    return null;
+  }
+}
+
+/**
  * Disconnect from Ledger device.
  */
 export async function disconnectLedger(transport: any): Promise<void> {
