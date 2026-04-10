@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
-import { connectLedger, signWithLedger, disconnectLedger, type LedgerConnection } from "./ledger";
-import { fetchBalance, getAccountInfo, getChainId, broadcastTx, getDenom, getPrefix, fetchStakingInfo, type BalanceInfo, type ValidatorInfo, type DelegationInfo } from "./client";
+import { connectLedger, tryAutoConnect, signWithLedger, disconnectLedger, type LedgerConnection } from "./ledger";
+import { fetchBalance, getAccountInfo, getChainId, broadcastTx, getDenom, getPrefix, fetchStakingInfo, checkAddressHistory, simulateTx, fetchRecentSends, fetchTxHistory, type BalanceInfo, type ValidatorInfo, type DelegationInfo, type SimulateResult, type RecentSend, type TxHistoryItem } from "./client";
 import { buildAminoSignDoc, assembleTxBytes, toMicroAmount, buildDelegateSignDoc, buildUndelegateSignDoc, buildClaimRewardsSignDoc, assembleStakingTxBytes } from "./txBuilder";
 import { checkCompliance, type ComplianceResult } from "./compliance";
 import { BUILD_INFO } from "./build-info";
@@ -9,6 +9,94 @@ type AppTab = "send" | "stake";
 
 type Status = { type: "pass" | "fail" | "info" | "warn"; message: string } | null;
 type Network = "testnet" | "mainnet";
+
+// ── Recent Addresses (convenience only — NOT a trust source) ──
+interface RecentAddress {
+  address: string;
+  label?: string;
+  lastUsed: number;   // Date.now()
+  txCount: number;    // successful sends
+}
+
+const RECENT_ADDR_KEY = "tx_recent_addresses";
+const MAX_RECENT = 5;
+
+function loadRecentAddresses(): RecentAddress[] {
+  try {
+    const raw = localStorage.getItem(RECENT_ADDR_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as RecentAddress[];
+    return parsed.sort((a, b) => b.lastUsed - a.lastUsed).slice(0, MAX_RECENT);
+  } catch { return []; }
+}
+
+function saveRecentAddress(address: string): void {
+  const list = loadRecentAddresses();
+  const existing = list.find((a) => a.address === address);
+  if (existing) {
+    existing.lastUsed = Date.now();
+    existing.txCount += 1;
+  } else {
+    list.unshift({ address, lastUsed: Date.now(), txCount: 1 });
+  }
+  localStorage.setItem(
+    RECENT_ADDR_KEY,
+    JSON.stringify(list.sort((a, b) => b.lastUsed - a.lastUsed).slice(0, MAX_RECENT))
+  );
+}
+
+// Address safety status for the on-chain first-contact check
+type AddressSafety =
+  | { status: "checking" }
+  | { status: "known"; sendCount: number }
+  | { status: "first_contact" }
+  | { status: "error" }
+  | null;
+
+// ── Time Ago Helper ──
+function getTimeAgo(isoTimestamp: string): string {
+  const now = Date.now();
+  const then = new Date(isoTimestamp).getTime();
+  const diffMs = now - then;
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(isoTimestamp).toLocaleDateString();
+}
+
+// ── Send Velocity Monitor (unusual activity detection) ──
+const VELOCITY_KEY = "tx_send_timestamps";
+const VELOCITY_WINDOW_MS = 10 * 60 * 1000; // 10 minute rolling window
+const VELOCITY_THRESHOLD = 3; // warn after 3+ sends in 10 min
+
+function recordSendTimestamp(): void {
+  try {
+    const raw = localStorage.getItem(VELOCITY_KEY);
+    const timestamps: number[] = raw ? JSON.parse(raw) : [];
+    timestamps.push(Date.now());
+    // Keep only timestamps within the rolling window
+    const cutoff = Date.now() - VELOCITY_WINDOW_MS;
+    const recent = timestamps.filter((t) => t > cutoff);
+    localStorage.setItem(VELOCITY_KEY, JSON.stringify(recent));
+  } catch { /* ignore */ }
+}
+
+function getRecentSendCount(): { count: number; windowMinutes: number } {
+  try {
+    const raw = localStorage.getItem(VELOCITY_KEY);
+    if (!raw) return { count: 0, windowMinutes: 10 };
+    const timestamps: number[] = JSON.parse(raw);
+    const cutoff = Date.now() - VELOCITY_WINDOW_MS;
+    const recent = timestamps.filter((t) => t > cutoff);
+    return { count: recent.length, windowMinutes: 10 };
+  } catch {
+    return { count: 0, windowMinutes: 10 };
+  }
+}
 
 // Transaction flow steps
 type TxStep = "idle" | "connect" | "review" | "sign" | "broadcast" | "done" | "failed";
@@ -129,6 +217,30 @@ function App() {
   // Transaction agreement
   const [showAgreement, setShowAgreement] = useState(false);
   const [agreementChecked, setAgreementChecked] = useState(false);
+
+  // Address safety (on-chain first-contact detection)
+  const [addressSafety, setAddressSafety] = useState<AddressSafety>(null);
+  const [recentAddresses, setRecentAddresses] = useState<RecentAddress[]>(loadRecentAddresses());
+
+  // Transaction simulation
+  const [simResult, setSimResult] = useState<SimulateResult | null>(null);
+
+  // On-chain recent sends (loaded when Send tab opens)
+  const [onChainRecents, setOnChainRecents] = useState<RecentSend[]>([]);
+  const [recentsLoading, setRecentsLoading] = useState(false);
+
+  // Transaction history panel
+  const [txHistory, setTxHistory] = useState<TxHistoryItem[]>([]);
+  const [txHistoryLoading, setTxHistoryLoading] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
+  // Ledger verification popup
+  const [showLedgerVerify, setShowLedgerVerify] = useState(false);
+  const [ledgerVerifyType, setLedgerVerifyType] = useState<"send" | "delegate" | "undelegate" | "claim">("send");
+  const [ledgerVerifyValidator, setLedgerVerifyValidator] = useState<string>("");
+
+  // Session timeout (auto-disconnect after inactivity)
+  const [lastActivity, setLastActivity] = useState<number>(Date.now());
 
   // Step timeline state
   const [txStep, setTxStep] = useState<TxStep>("idle");
@@ -253,6 +365,78 @@ function App() {
     setConnecting(false);
   }, [network, profile, log]);
 
+  // ── Auto-connect on page load (previously authorized Ledger) ──
+  useEffect(() => {
+    // Only attempt if not already connected and not currently connecting
+    if (ledger || connecting) return;
+
+    let cancelled = false;
+    const attempt = async () => {
+      try {
+        const prefix = getPrefix(network);
+        const connection = await tryAutoConnect(prefix);
+        if (cancelled || !connection) return;
+
+        setLedger(connection);
+        setTxStep("review");
+        setStatus({ type: "pass", message: "Ledger auto-connected" });
+
+        // Update profile
+        if (profile) {
+          const updated = { ...profile, lastLogin: new Date().toISOString(), lastAddress: connection.address };
+          saveProfile(updated);
+          setProfile(updated);
+        }
+
+        // Fetch balance
+        const bal = await fetchBalance(connection.address, network);
+        if (!cancelled) setBalance(bal);
+      } catch {
+        // Silent fail — user can always click Connect manually
+      }
+    };
+
+    attempt();
+    return () => { cancelled = true; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Run once on mount only
+
+  // ── Session Timeout (auto-disconnect after 10 min inactivity) ──
+  const SESSION_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
+
+  // Track user activity — reset the timer on any interaction
+  useEffect(() => {
+    const resetActivity = () => setLastActivity(Date.now());
+    const events = ["mousedown", "keydown", "scroll", "touchstart"] as const;
+    events.forEach((e) => window.addEventListener(e, resetActivity));
+    return () => {
+      events.forEach((e) => window.removeEventListener(e, resetActivity));
+    };
+  }, []);
+
+  // Check for timeout every 30 seconds
+  useEffect(() => {
+    if (!ledger) return; // No need to check if not connected
+
+    const interval = setInterval(async () => {
+      const elapsed = Date.now() - lastActivity;
+      if (elapsed >= SESSION_TIMEOUT_MS) {
+        try {
+          await disconnectLedger(ledger.transport);
+        } catch { /* ignore */ }
+        setLedger(null);
+        setBalance(null);
+        setTxStep("idle");
+        setStatus({
+          type: "warn",
+          message: "Session timed out after 10 minutes of inactivity. Ledger disconnected for security. Please reconnect.",
+        });
+      }
+    }, 30_000);
+
+    return () => clearInterval(interval);
+  }, [ledger, lastActivity]);
+
   // ── Release USB ──
   const handleReleaseUSB = useCallback(async () => {
     log("Release USB clicked...");
@@ -335,11 +519,22 @@ function App() {
       setValidators(info.validators);
       setDelegations(info.delegations);
       setTotalRewards(info.totalRewards);
+
+      // Auto-select validator: prefer localStorage last-used, then first delegation
+      if (!selectedValidator) {
+        const saved = localStorage.getItem("tx_last_validator");
+        const validAddrs = new Set(info.validators.map((v) => v.operatorAddress));
+        if (saved && validAddrs.has(saved)) {
+          setSelectedValidator(saved);
+        } else if (info.delegations.length > 0) {
+          setSelectedValidator(info.delegations[0].validatorAddress);
+        }
+      }
     } catch (err) {
       console.error("Failed to load staking info:", err);
     }
     setStakingLoading(false);
-  }, [ledger, network]);
+  }, [ledger, network, selectedValidator]);
 
   // Load staking info when switching to stake tab
   useEffect(() => {
@@ -347,6 +542,30 @@ function App() {
       loadStakingInfo();
     }
   }, [activeTab, ledger, loadStakingInfo]);
+
+  // Load on-chain recent sends when switching to send tab
+  useEffect(() => {
+    if (activeTab === "send" && ledger && onChainRecents.length === 0 && !recentsLoading) {
+      setRecentsLoading(true);
+      fetchRecentSends(ledger.address, network, 10)
+        .then((sends) => setOnChainRecents(sends))
+        .catch(() => {})
+        .finally(() => setRecentsLoading(false));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, ledger, network]);
+
+  // Load full tx history when wallet connects
+  useEffect(() => {
+    if (ledger && txHistory.length === 0 && !txHistoryLoading) {
+      setTxHistoryLoading(true);
+      fetchTxHistory(ledger.address, network, 10)
+        .then((history) => setTxHistory(history))
+        .catch(() => {})
+        .finally(() => setTxHistoryLoading(false));
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ledger, network]);
 
   // ── Stake / Unstake ──
   const handleStake = useCallback(async () => {
@@ -407,6 +626,44 @@ function App() {
     setSigning(false);
   }, [ledger, selectedValidator, stakeAmount, stakeAction, network, handleRefreshBalance, loadStakingInfo]);
 
+  // ── Max Stake ──
+  // Sets stakeAmount to the largest value that still leaves enough for
+  // 3 more transactions so the wallet is never stuck at zero after a Max
+  // click. Reserve = 4 × fee (1 for the current stake tx + 3 future txs).
+  const handleMaxStake = useCallback(() => {
+    if (!balance) {
+      setStatus({ type: "fail", message: "Balance not loaded yet" });
+      return;
+    }
+    const balanceMicro = parseInt(balance.amount || "0");
+    const FEE_MICRO = 50000; // 0.05 CORE per tx — matches fee in txBuilder.ts
+    const RESERVE_TXS = 4; // this stake tx + 3 future txs
+    const reserveMicro = FEE_MICRO * RESERVE_TXS;
+    if (balanceMicro <= reserveMicro) {
+      setStatus({
+        type: "fail",
+        message: "Insufficient balance — need at least 0.20 CORE (4 × 0.05 fee reserve)",
+      });
+      return;
+    }
+    const maxMicro = balanceMicro - reserveMicro;
+    // Round down to nearest whole CORE for a clean stake amount
+    const maxWhole = Math.floor(maxMicro / 1_000_000);
+    const reservedForGas = ((balanceMicro - (maxWhole * 1_000_000)) / 1_000_000).toFixed(6);
+    if (maxWhole <= 0) {
+      setStatus({
+        type: "fail",
+        message: "Balance too low to stake a whole CORE after reserving for gas",
+      });
+      return;
+    }
+    setStakeAmount(String(maxWhole));
+    setStatus({
+      type: "info",
+      message: `Max set to ${maxWhole} CORE — ${reservedForGas} CORE reserved for gas + 3 future txs`,
+    });
+  }, [balance]);
+
   // ── Claim Rewards ──
   const handleClaimRewards = useCallback(async (validatorAddress: string) => {
     if (!ledger) return;
@@ -458,27 +715,95 @@ function App() {
     setSigning(false);
   }, [ledger, network, handleRefreshBalance, loadStakingInfo]);
 
-  // ── Run Compliance Check ──
-  const handleCompliance = useCallback(() => {
+  // ── Run Compliance + Simulation + Address History + Amount Sanity (parallel) ──
+  const handleCompliance = useCallback(async () => {
     const amountNum = parseFloat(amount);
     if (isNaN(amountNum)) {
       setComplianceResult({ status: "FAIL", reason: "Invalid amount" });
       return;
     }
-    const result = checkCompliance(recipient, amountNum);
+
+    // Synchronous compliance check first (fast gate)
+    const result = checkCompliance(recipient, amountNum, network);
     setComplianceResult(result);
     setTxHash(null);
     setShowAgreement(false);
     setAgreementChecked(false);
+    setSimResult(null);
 
-    if (result.status === "PASS") {
-      setStatus({ type: "pass", message: "Compliance check passed." });
-      setShowAgreement(true);
-      setTxStep("review");
-    } else {
+    if (result.status !== "PASS") {
       setStatus({ type: "fail", message: `Compliance check failed: ${result.reason}` });
+      return;
     }
-  }, [recipient, amount]);
+
+    // Compliance passed — fire simulation + address history in parallel
+    setStatus({ type: "info", message: "Verifying transaction on-chain..." });
+    setAddressSafety({ status: "checking" });
+
+    const denom = getDenom(network);
+    const microAmount = toMicroAmount(amountNum);
+
+    try {
+      if (ledger) {
+        // Fire all three checks in parallel: address history + account info (for sim) + simulate
+        const [history, acctInfo] = await Promise.all([
+          checkAddressHistory(ledger.address, recipient.trim(), network),
+          getAccountInfo(ledger.address, network).catch(() => ({ accountNumber: 0, sequence: 0 })),
+        ]);
+
+        // Now simulate with the public key + sequence (needed by Cosmos SDK simulate)
+        const sim = await simulateTx(
+          ledger.address, recipient.trim(), microAmount, denom, network,
+          ledger.publicKey, acctInfo.sequence
+        );
+
+        // Address history result
+        if (history.hasPriorSends) {
+          setAddressSafety({ status: "known", sendCount: history.sendCount });
+        } else {
+          setAddressSafety({ status: "first_contact" });
+        }
+
+        // Simulation result
+        setSimResult(sim);
+
+        // Amount sanity check (>50% of balance)
+        const balanceMicro = parseInt(balance?.amount || "0", 10);
+        const sendMicro = parseInt(microAmount, 10);
+        const pct = balanceMicro > 0 ? (sendMicro / balanceMicro) * 100 : 0;
+
+        // Build composite status message
+        const warnings: string[] = [];
+
+        if (!sim.success) {
+          warnings.push(`Simulation warning: ${sim.error}`);
+        }
+        if (!history.hasPriorSends) {
+          warnings.push("First contact — never sent to this address before");
+        }
+        if (pct > 50) {
+          warnings.push(`Sending ${pct.toFixed(0)}% of your total balance`);
+        }
+
+        if (warnings.length > 0) {
+          setStatus({ type: "warn", message: warnings.join(". ") + ". Verify carefully on your Ledger." });
+        } else {
+          setStatus({ type: "pass", message: `All checks passed. Estimated gas: ${sim.gasUsed.toLocaleString()}.` });
+        }
+      } else {
+        setAddressSafety(null);
+        setSimResult(null);
+        setStatus({ type: "pass", message: "Compliance check passed." });
+      }
+    } catch {
+      setAddressSafety({ status: "error" });
+      setSimResult(null);
+      setStatus({ type: "pass", message: "Compliance passed. (On-chain checks unavailable)" });
+    }
+
+    setShowAgreement(true);
+    setTxStep("review");
+  }, [recipient, amount, ledger, network, balance]);
 
   // ── Sign & Send ──
   const handleSignAndSend = useCallback(async () => {
@@ -532,6 +857,12 @@ function App() {
           setTxStep("done");
           setStatus({ type: "pass", message: "Transaction broadcast successfully!" });
           setShowAgreement(false);
+          // Save to recent addresses (convenience only — not a trust source)
+          saveRecentAddress(recipient.trim());
+          setRecentAddresses(loadRecentAddresses());
+          setAddressSafety(null);
+          // Record for velocity monitoring
+          recordSendTimestamp();
           setTimeout(() => handleRefreshBalance(), 3000);
         } else {
           setFailedAtStep("broadcast");
@@ -568,6 +899,19 @@ function App() {
     setSetupPhrase("");
     setSetupColor(ACCENT_COLORS[0].value);
   }, []);
+
+  // ── Ledger Verification Popup ──
+  // Shows users exactly what their Ledger screen will display before signing
+  const handleLedgerVerifyProceed = useCallback(() => {
+    setShowLedgerVerify(false);
+    if (ledgerVerifyType === "send") {
+      handleSignAndSend();
+    } else if (ledgerVerifyType === "delegate" || ledgerVerifyType === "undelegate") {
+      handleStake();
+    } else if (ledgerVerifyType === "claim") {
+      handleClaimRewards(ledgerVerifyValidator);
+    }
+  }, [ledgerVerifyType, ledgerVerifyValidator, handleSignAndSend, handleStake, handleClaimRewards]);
 
   const explorerBase = "https://solomentelabs.com/explorer.html";
 
@@ -777,13 +1121,22 @@ function App() {
         </>
       )}
 
-      {/* ── When connected: Compact bar ── */}
+      {/* ── When connected: Wallet address + balance bar ── */}
       {ledger && (
         <div className="connected-bar">
           <span className="live-dot" style={{ backgroundColor: profile.accentColor }} />
           <div className="connected-bar-info">
-            <div className="connected-bar-item">
-              <span className="cb-value">{ledger.address.slice(0, 10)}...{ledger.address.slice(-4)}</span>
+            <div className="connected-bar-item" style={{ flex: "1 1 100%" }}>
+              <span
+                className="cb-value wallet-address"
+                onClick={() => {
+                  navigator.clipboard.writeText(ledger.address);
+                  setStatus({ type: "info", message: "Address copied to clipboard" });
+                }}
+                title="Click to copy full address"
+              >
+                {ledger.address}
+              </span>
             </div>
             <div className="connected-bar-item">
               <span className="cb-value green">{balance?.display || "..."}</span>
@@ -799,9 +1152,13 @@ function App() {
         </div>
       )}
 
-      {/* ── Tab Toggle ── */}
+      {/* ── Two-Panel Dashboard ── */}
       {ledger && (
-        <div className="card" style={{ padding: "8px 10px", marginBottom: 8 }}>
+        <div className="dashboard-layout">
+          <div className="dashboard-left">
+
+      {/* ── Tab Toggle ── */}
+      <div className="card" style={{ padding: "8px 10px", marginBottom: 8 }}>
           <div className="network-toggle">
             <button
               className={`toggle-btn ${activeTab === "send" ? "active" : ""}`}
@@ -821,12 +1178,48 @@ function App() {
             </button>
           </div>
         </div>
-      )}
 
       {/* ── Send Tab ── */}
-      {ledger && activeTab === "send" && (
+      {activeTab === "send" && (
         <div className="card card-enter">
           <div className="section-label">Send Transaction</div>
+
+          {/* ── Recent Sends (on-chain history — tamper-proof) ── */}
+          {recentsLoading && (
+            <div className="recent-addresses">
+              <div className="recent-addresses-label" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <span className="spinner" style={{ width: 10, height: 10 }} /> Loading send history from chain...
+              </div>
+            </div>
+          )}
+          {!recentsLoading && onChainRecents.length > 0 && (
+            <div className="recent-addresses">
+              <div className="recent-addresses-label">Recent Sends (on-chain)</div>
+              <div className="recent-addresses-chips">
+                {onChainRecents.slice(0, 5).map((rs) => (
+                  <button
+                    key={rs.txHash}
+                    type="button"
+                    className={`recent-chip ${recipient === rs.recipient ? "active" : ""}`}
+                    onClick={() => {
+                      setRecipient(rs.recipient);
+                      setComplianceResult(null);
+                      setTxHash(null);
+                      setShowAgreement(false);
+                      setAgreementChecked(false);
+                      setAddressSafety(null);
+                    }}
+                    title={`${rs.recipient}\n${rs.amount} CORE • ${rs.timestamp ? new Date(rs.timestamp).toLocaleDateString() : ""}`}
+                  >
+                    <span className="recent-chip-addr">
+                      {rs.recipient.slice(0, 8)}...{rs.recipient.slice(-6)}
+                    </span>
+                    <span className="recent-chip-count">{rs.amount}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <div className="input-group">
             <label>Recipient Address</label>
@@ -840,6 +1233,7 @@ function App() {
                 setTxHash(null);
                 setShowAgreement(false);
                 setAgreementChecked(false);
+                setAddressSafety(null);
               }}
             />
           </div>
@@ -903,6 +1297,97 @@ function App() {
                 </div>
               </div>
 
+              {/* ── On-chain Address Safety Banner ── */}
+              {addressSafety?.status === "checking" && (
+                <div className="address-safety checking">
+                  <span className="spinner" style={{ width: 12, height: 12 }} /> Checking address history on-chain...
+                </div>
+              )}
+              {addressSafety?.status === "first_contact" && (
+                <div className="address-safety first-contact">
+                  <div className="address-safety-icon">⚠</div>
+                  <div className="address-safety-text">
+                    <strong>First contact</strong> — You have never sent to this address before.
+                    <br />Verify every character on your Ledger screen before approving.
+                  </div>
+                </div>
+              )}
+              {addressSafety?.status === "known" && (
+                <div className="address-safety known">
+                  <div className="address-safety-icon">✓</div>
+                  <div className="address-safety-text">
+                    You&apos;ve sent to this address <strong>{addressSafety.sendCount} time{addressSafety.sendCount > 1 ? "s" : ""}</strong> before.
+                    <br />Still verify the address on your Ledger screen.
+                  </div>
+                </div>
+              )}
+
+              {/* ── Transaction Simulation Result ── */}
+              {simResult && simResult.success && (
+                <div className="address-safety known" style={{ borderColor: "rgba(52,211,153,.15)" }}>
+                  <div className="address-safety-icon">⚡</div>
+                  <div className="address-safety-text">
+                    Simulation passed — estimated gas: <strong>{simResult.gasUsed.toLocaleString()}</strong>
+                  </div>
+                </div>
+              )}
+              {simResult && !simResult.success && (
+                <div className="address-safety first-contact">
+                  <div className="address-safety-icon">⚠</div>
+                  <div className="address-safety-text">
+                    <strong>Simulation failed</strong> — {simResult.error}
+                    <br />This transaction may fail on-chain. Proceed with caution.
+                  </div>
+                </div>
+              )}
+
+              {/* ── Amount Sanity Check ── */}
+              {balance && (() => {
+                const balMicro = parseInt(balance.amount || "0", 10);
+                const sendMicro = Math.round(parseFloat(amount) * 1_000_000);
+                const pct = balMicro > 0 ? (sendMicro / balMicro) * 100 : 0;
+                if (pct > 90) {
+                  return (
+                    <div className="address-safety first-contact" style={{ borderColor: "rgba(239,68,68,.5)", background: "rgba(239,68,68,.1)" }}>
+                      <div className="address-safety-icon">🛑</div>
+                      <div className="address-safety-text" style={{ color: "#f87171" }}>
+                        <strong>Sending {pct.toFixed(0)}% of your total balance!</strong>
+                        <br />This will leave almost nothing in your wallet. Are you sure?
+                      </div>
+                    </div>
+                  );
+                }
+                if (pct > 50) {
+                  return (
+                    <div className="address-safety first-contact">
+                      <div className="address-safety-icon">⚠</div>
+                      <div className="address-safety-text">
+                        <strong>Large transfer — {pct.toFixed(0)}% of your balance.</strong>
+                        <br />Double-check the amount before approving.
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
+              {/* ── Send Velocity Warning ── */}
+              {(() => {
+                const velocity = getRecentSendCount();
+                if (velocity.count >= VELOCITY_THRESHOLD) {
+                  return (
+                    <div className="address-safety first-contact" style={{ borderColor: "rgba(245,158,11,.5)" }}>
+                      <div className="address-safety-icon">⚡</div>
+                      <div className="address-safety-text">
+                        <strong>Unusual activity — {velocity.count} transactions in the last {velocity.windowMinutes} minutes.</strong>
+                        <br />Confirm this is intentional and your session hasn&apos;t been compromised.
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
               <label className="agreement-check">
                 <input
                   type="checkbox"
@@ -914,7 +1399,10 @@ function App() {
 
               <button
                 className={`btn btn-primary ${signing ? "btn-signing" : ""}`}
-                onClick={handleSignAndSend}
+                onClick={() => {
+                  setLedgerVerifyType("send");
+                  setShowLedgerVerify(true);
+                }}
                 disabled={!agreementChecked || signing}
                 style={{ marginTop: 8, background: agreementChecked && !signing ? `linear-gradient(135deg, ${profile.accentColor}, #059669)` : undefined }}
               >
@@ -938,8 +1426,30 @@ function App() {
       )}
 
       {/* ── Stake Tab ── */}
-      {ledger && activeTab === "stake" && (
+      {activeTab === "stake" && (
         <div className="card card-enter">
+          {/* Total Staked Summary */}
+          {delegations.length > 0 && (
+            <div className="staking-summary">
+              <div className="staking-summary-row">
+                <span className="staking-summary-label">Total Staked</span>
+                <span className="staking-summary-value">
+                  {(delegations.reduce((sum, d) => sum + parseInt(d.balance), 0) / 1_000_000).toFixed(2)} CORE
+                </span>
+              </div>
+              <div className="staking-summary-row">
+                <span className="staking-summary-label">Pending Rewards</span>
+                <span className="staking-summary-value green">
+                  +{(parseInt(totalRewards) / 1_000_000).toFixed(4)} CORE
+                </span>
+              </div>
+              <div className="staking-summary-row">
+                <span className="staking-summary-label">Validators</span>
+                <span className="staking-summary-value">{delegations.length}</span>
+              </div>
+            </div>
+          )}
+
           {/* My Delegations */}
           {delegations.length > 0 && (
             <div style={{ marginBottom: 12 }}>
@@ -960,7 +1470,11 @@ function App() {
                     {hasRewards && (
                       <button
                         className="btn-sm"
-                        onClick={() => handleClaimRewards(d.validatorAddress)}
+                        onClick={() => {
+                          setLedgerVerifyType("claim");
+                          setLedgerVerifyValidator(d.validatorAddress);
+                          setShowLedgerVerify(true);
+                        }}
                         disabled={signing}
                         style={{ color: "var(--green)", borderColor: "rgba(52,211,153,.3)" }}
                       >
@@ -971,7 +1485,7 @@ function App() {
                 );
               })}
               {parseInt(totalRewards) > 0 && (
-                <div style={{ marginTop: 6, fontSize: ".62rem", fontFamily: "var(--mono)", color: "var(--green)", textAlign: "right" }}>
+                <div style={{ marginTop: 8, fontSize: "1.25rem", fontWeight: 700, fontFamily: "var(--mono)", color: "var(--green)", textAlign: "right" }}>
                   Total pending: {(parseInt(totalRewards) / 1_000_000).toFixed(4)} CORE
                 </div>
               )}
@@ -1012,30 +1526,67 @@ function App() {
             </button>
           </div>
 
-          <div className="input-group">
+          <div className="input-group validator-selector">
             <label>Validator</label>
             <select
               value={selectedValidator}
-              onChange={(e) => setSelectedValidator(e.target.value)}
+              onChange={(e) => {
+                setSelectedValidator(e.target.value);
+                if (e.target.value) localStorage.setItem("tx_last_validator", e.target.value);
+              }}
               style={{
                 width: "100%",
-                padding: "8px 10px",
+                padding: "10px 12px",
                 borderRadius: 7,
-                border: "1px solid var(--border)",
+                border: selectedValidator
+                  ? "1.5px solid var(--green)"
+                  : "1.5px solid var(--yellow)",
                 background: "var(--bg)",
                 color: "var(--text)",
                 fontFamily: "var(--mono)",
-                fontSize: ".72rem",
+                fontSize: "1rem",
+                fontWeight: 600,
                 outline: "none",
               }}
             >
-              <option value="">Select a validator...</option>
-              {validators.map((v) => (
-                <option key={v.operatorAddress} value={v.operatorAddress}>
-                  {v.moniker} ({(parseFloat(v.commission) * 100).toFixed(0)}% fee)
-                </option>
-              ))}
+              <option value="">⬇ Select a validator...</option>
+              {validators.map((v) => {
+                const isDelegated = delegations.some((d) => d.validatorAddress === v.operatorAddress);
+                return (
+                  <option key={v.operatorAddress} value={v.operatorAddress}>
+                    {isDelegated ? "★ " : ""}{v.moniker} ({(parseFloat(v.commission) * 100).toFixed(0)}% fee)
+                  </option>
+                );
+              })}
             </select>
+            {selectedValidator && (() => {
+              const v = validators.find((x) => x.operatorAddress === selectedValidator);
+              const d = delegations.find((x) => x.validatorAddress === selectedValidator);
+              const stakedAmount = d ? (parseInt(d.balance) / 1_000_000).toFixed(2) : "0.00";
+              const pendingRewards = d ? (parseInt(d.rewards) / 1_000_000).toFixed(4) : "0.0000";
+              const hasStake = d && parseInt(d.balance) > 0;
+              return v ? (
+                <div className="validator-detail-badge">
+                  <div className="validator-detail-name">{v.moniker}</div>
+                  <div className="validator-detail-stats">
+                    <div className="validator-detail-stat">
+                      <span className="validator-detail-label">Staked</span>
+                      <span className="validator-detail-value">{stakedAmount} CORE</span>
+                    </div>
+                    {hasStake && (
+                      <div className="validator-detail-stat">
+                        <span className="validator-detail-label">Pending</span>
+                        <span className="validator-detail-value green">+{pendingRewards} CORE</span>
+                      </div>
+                    )}
+                    <div className="validator-detail-stat">
+                      <span className="validator-detail-label">Commission</span>
+                      <span className="validator-detail-value">{(parseFloat(v.commission) * 100).toFixed(1)}%</span>
+                    </div>
+                  </div>
+                </div>
+              ) : null;
+            })()}
           </div>
 
           <div className="input-group">
@@ -1044,15 +1595,33 @@ function App() {
               type="number"
               placeholder="0.00"
               min="0"
-              step="0.01"
+              step="0.000001"
               value={stakeAmount}
               onChange={(e) => setStakeAmount(e.target.value)}
             />
+            {stakeAction === "delegate" && balance && (
+              <div className="input-helper">
+                <span className="input-helper-label">
+                  Available: <strong>{balance.display}</strong>
+                </span>
+                <button
+                  type="button"
+                  className="btn-max"
+                  onClick={handleMaxStake}
+                  disabled={signing}
+                >
+                  MAX
+                </button>
+              </div>
+            )}
           </div>
 
           <button
             className="btn btn-primary"
-            onClick={handleStake}
+            onClick={() => {
+              setLedgerVerifyType(stakeAction);
+              setShowLedgerVerify(true);
+            }}
             disabled={!selectedValidator || !stakeAmount || signing}
             style={{ background: stakeAction === "delegate"
               ? `linear-gradient(135deg, var(--green), #059669)`
@@ -1092,6 +1661,244 @@ function App() {
       {status && !showAgreement && !complianceResult && (
         <div className={`status ${status.type}`}>
           {status.message}
+        </div>
+      )}
+
+          </div>{/* end dashboard-left */}
+
+          <div className="dashboard-right">
+
+      {/* ── Transaction History Panel ── */}
+        <div className="card" style={{ marginBottom: 0 }}>
+          <button
+            type="button"
+            className="tx-history-toggle"
+            onClick={() => setShowHistory(!showHistory)}
+            style={{ padding: "12px 0" }}
+          >
+            <span style={{ fontSize: "1rem" }}>Transaction History</span>
+            <span style={{ fontSize: ".8rem", color: "var(--muted)" }}>
+              {showHistory ? "▲ Hide" : `▼ Show (${txHistory.length})`}
+            </span>
+          </button>
+
+          {showHistory && (
+            <div className="tx-history-list">
+              {txHistoryLoading && (
+                <div style={{ padding: 10, textAlign: "center", color: "var(--muted)", fontSize: ".75rem" }}>
+                  <span className="spinner" style={{ width: 12, height: 12 }} /> Loading from chain...
+                </div>
+              )}
+              {!txHistoryLoading && txHistory.length === 0 && (
+                <div style={{ padding: 10, textAlign: "center", color: "var(--muted)", fontSize: ".75rem" }}>
+                  No transactions found
+                </div>
+              )}
+              {txHistory.map((tx, i) => {
+                const typeLabel: Record<string, string> = {
+                  send: "Sent", receive: "Received", delegate: "Staked",
+                  undelegate: "Unstaked", claim: "Claimed", other: "Other"
+                };
+                const typeIcon: Record<string, string> = {
+                  send: "↗", receive: "↙", delegate: "⬆",
+                  undelegate: "⬇", claim: "★", other: "•"
+                };
+                const typeColor: Record<string, string> = {
+                  send: "#f87171", receive: "var(--green)", delegate: "#60a5fa",
+                  undelegate: "#fbbf24", claim: "var(--green)", other: "var(--muted)"
+                };
+                const ago = tx.timestamp ? getTimeAgo(tx.timestamp) : "";
+                return (
+                  <div key={`${tx.txHash}-${i}`} className="tx-history-row">
+                    <span className="tx-history-icon" style={{ color: typeColor[tx.type] }}>
+                      {typeIcon[tx.type]}
+                    </span>
+                    <div className="tx-history-details">
+                      <div className="tx-history-type" style={{ color: typeColor[tx.type] }}>
+                        {typeLabel[tx.type] || tx.type}
+                        {tx.amount && <span className="tx-history-amount"> {tx.amount} CORE</span>}
+                      </div>
+                      <div className="tx-history-meta">
+                        {tx.counterparty && (
+                          <span>{tx.counterparty.slice(0, 10)}...{tx.counterparty.slice(-4)}</span>
+                        )}
+                        {ago && <span className="tx-history-time">{ago}</span>}
+                      </div>
+                    </div>
+                    <a
+                      href={`https://${network === "mainnet" ? "explorer" : "explorer.testnet-1"}.coreum.dev/coreum/transactions/${tx.txHash}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="tx-history-link"
+                      title="View on explorer"
+                    >
+                      ↗
+                    </a>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+      {/* ── Security Status Card ── */}
+        <div className="card security-status">
+          <div className="security-status-title">Security Status</div>
+          <div className="security-row">
+            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
+            <span className="security-label">Ledger hardware-only signing</span>
+          </div>
+          <div className="security-row">
+            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
+            <span className="security-label">Session timeout</span>
+            <span className="security-value">{Math.max(0, Math.ceil((10 * 60 * 1000 - (Date.now() - lastActivity)) / 60000))}m left</span>
+          </div>
+          <div className="security-row">
+            <span className="security-icon" style={{ color: getRecentSendCount().count >= VELOCITY_THRESHOLD ? "#fbbf24" : "var(--green)" }}>
+              {getRecentSendCount().count >= VELOCITY_THRESHOLD ? "⚠" : "✓"}
+            </span>
+            <span className="security-label">Send velocity</span>
+            <span className="security-value">{getRecentSendCount().count} in 10m</span>
+          </div>
+          <div className="security-row">
+            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
+            <span className="security-label">On-chain address verification</span>
+          </div>
+          <div className="security-row">
+            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
+            <span className="security-label">Transaction simulation</span>
+          </div>
+          <div className="security-row">
+            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
+            <span className="security-label">Cross-chain address detection</span>
+          </div>
+          <div className="security-row">
+            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
+            <span className="security-label">Open source verified build</span>
+          </div>
+          <div className="security-row">
+            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
+            <span className="security-label">Anti-phishing profile</span>
+          </div>
+          <div className="security-row">
+            <span className="security-icon" style={{ color: "var(--green)" }}>✓</span>
+            <span className="security-label">Ledger verification popup</span>
+          </div>
+        </div>
+
+          </div>{/* end dashboard-right */}
+        </div>
+      )}
+
+      {/* ── Ledger Verification Popup ── */}
+      {showLedgerVerify && (
+        <div className="ledger-verify-overlay" onClick={() => setShowLedgerVerify(false)}>
+          <div className="ledger-verify-modal" onClick={(e) => e.stopPropagation()}>
+            <div className="ledger-verify-header">
+              <span className="ledger-verify-icon">🔒</span>
+              <span>Verify on Your Ledger</span>
+            </div>
+            <div className="ledger-verify-desc">
+              Your Ledger device will display each field below.
+              <strong> Verify every field matches exactly</strong> before pressing Approve.
+            </div>
+
+            {ledgerVerifyType === "send" && (
+              <div className="ledger-verify-fields">
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Chain</span>
+                  <span className="ledger-verify-value">{network === "mainnet" ? "coreum-mainnet-1" : "coreum-testnet-1"}</span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">From</span>
+                  <span className="ledger-verify-value">{ledger?.address}</span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">To</span>
+                  <span className="ledger-verify-value">{recipient}</span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Amount</span>
+                  <span className="ledger-verify-value highlight">{amount} CORE</span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Fee</span>
+                  <span className="ledger-verify-value">0.05 CORE</span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Memo</span>
+                  <span className="ledger-verify-value">Sent via TX Web Wallet</span>
+                </div>
+              </div>
+            )}
+
+            {(ledgerVerifyType === "delegate" || ledgerVerifyType === "undelegate") && (
+              <div className="ledger-verify-fields">
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Type</span>
+                  <span className="ledger-verify-value">{ledgerVerifyType === "delegate" ? "Delegate (Stake)" : "Undelegate (Unstake)"}</span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Delegator</span>
+                  <span className="ledger-verify-value">{ledger?.address}</span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Validator</span>
+                  <span className="ledger-verify-value" style={{ fontSize: ".65rem" }}>
+                    {validators.find((v) => v.operatorAddress === selectedValidator)?.moniker || selectedValidator}
+                  </span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Amount</span>
+                  <span className="ledger-verify-value highlight">{stakeAmount} CORE</span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Fee</span>
+                  <span className="ledger-verify-value">0.05 CORE</span>
+                </div>
+              </div>
+            )}
+
+            {ledgerVerifyType === "claim" && (
+              <div className="ledger-verify-fields">
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Type</span>
+                  <span className="ledger-verify-value">Withdraw Rewards</span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Delegator</span>
+                  <span className="ledger-verify-value">{ledger?.address}</span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Validator</span>
+                  <span className="ledger-verify-value" style={{ fontSize: ".65rem" }}>
+                    {validators.find((v) => v.operatorAddress === ledgerVerifyValidator)?.moniker || ledgerVerifyValidator}
+                  </span>
+                </div>
+                <div className="ledger-verify-field">
+                  <span className="ledger-verify-label">Fee</span>
+                  <span className="ledger-verify-value">0.05 CORE</span>
+                </div>
+              </div>
+            )}
+
+            <div className="ledger-verify-warning">
+              If ANY field does not match, press <strong>REJECT</strong> on your Ledger device.
+            </div>
+
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn btn-outline" onClick={() => setShowLedgerVerify(false)} style={{ flex: 1 }}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleLedgerVerifyProceed}
+                style={{ flex: 1, background: `linear-gradient(135deg, ${profile.accentColor}, #059669)` }}
+              >
+                Proceed to Sign
+              </button>
+            </div>
+          </div>
         </div>
       )}
 

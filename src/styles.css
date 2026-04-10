@@ -33,7 +33,178 @@ body {
 
 #root {
   width: 100%;
-  max-width: 520px;
+  max-width: 1200px;
+}
+
+/* ── Dashboard Two-Panel Layout ── */
+.dashboard-layout {
+  display: grid;
+  grid-template-columns: 1fr 380px;
+  gap: 12px;
+  align-items: start;
+}
+
+.dashboard-left {
+  min-width: 0;
+}
+
+.dashboard-right {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: sticky;
+  top: 16px;
+}
+
+/* Stack on narrow screens */
+@media (max-width: 860px) {
+  .dashboard-layout {
+    grid-template-columns: 1fr;
+  }
+  .dashboard-right {
+    position: static;
+  }
+}
+
+/* ── Security Status Card ── */
+.security-status {
+  padding: 12px 14px;
+}
+
+.security-status-title {
+  font-family: var(--mono);
+  font-size: .7rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 8px;
+}
+
+.security-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-family: var(--mono);
+  font-size: .78rem;
+}
+
+.security-icon {
+  font-size: .9rem;
+  flex-shrink: 0;
+}
+
+.security-label {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.security-value {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: .7rem;
+}
+
+/* ── Ledger Verification Popup ── */
+.ledger-verify-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, .75);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 20px;
+}
+
+.ledger-verify-modal {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 24px;
+  max-width: 480px;
+  width: 100%;
+  animation: slideUp .2s ease-out;
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.ledger-verify-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-family: var(--mono);
+  font-size: 1.1rem;
+  font-weight: 700;
+  margin-bottom: 12px;
+}
+
+.ledger-verify-icon {
+  font-size: 1.4rem;
+}
+
+.ledger-verify-desc {
+  font-size: .8rem;
+  color: var(--muted);
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.ledger-verify-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 16px;
+}
+
+.ledger-verify-field {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-radius: 6px;
+}
+
+.ledger-verify-label {
+  font-family: var(--mono);
+  font-size: .7rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .03em;
+  flex-shrink: 0;
+}
+
+.ledger-verify-value {
+  font-family: var(--mono);
+  font-size: .75rem;
+  color: var(--text);
+  text-align: right;
+  word-break: break-all;
+  max-width: 70%;
+}
+
+.ledger-verify-value.highlight {
+  color: var(--green);
+  font-weight: 700;
+  font-size: .9rem;
+}
+
+.ledger-verify-warning {
+  background: rgba(239, 68, 68, .08);
+  border: 1px solid rgba(239, 68, 68, .2);
+  border-radius: 8px;
+  padding: 10px 14px;
+  font-family: var(--mono);
+  font-size: .75rem;
+  color: #f87171;
+  text-align: center;
+  margin-bottom: 16px;
 }
 
 /* ── Domain Warning ── */
@@ -436,6 +607,74 @@ body {
 
 .connected-bar-item .cb-value.green {
   color: var(--green);
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: .01em;
+  max-width: 280px;
+}
+
+/* Full wallet address — prominent, clickable to copy */
+.connected-bar-item .cb-value.wallet-address {
+  font-size: .85rem;
+  font-weight: 600;
+  color: var(--text);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 5px;
+  background: rgba(52,211,153,.06);
+  border: 1px solid rgba(52,211,153,.15);
+  transition: all 0.15s ease;
+  letter-spacing: .02em;
+}
+
+.connected-bar-item .cb-value.wallet-address:hover {
+  background: rgba(52,211,153,.12);
+  border-color: var(--green);
+}
+
+/* ── Input Helper Row (Available + Max button under stake amount) ── */
+.input-helper {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 8px;
+  font-size: 1.05rem;
+  font-family: var(--mono);
+  color: var(--muted);
+}
+
+.input-helper-label strong {
+  color: var(--text);
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.btn-max {
+  padding: 6px 14px;
+  background: transparent;
+  border: 1px solid var(--green);
+  color: var(--green);
+  border-radius: 5px;
+  font-family: var(--mono);
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: .05em;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-max:hover:not(:disabled) {
+  background: var(--green);
+  color: var(--bg);
+}
+
+.btn-max:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .connected-bar-actions {
@@ -496,15 +735,246 @@ body {
   margin-bottom: 3px;
 }
 
+/* Validator selector — slightly bigger label to draw attention */
+.validator-selector label {
+  font-size: .75rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 5px;
+}
+
+/* Badge shown below dropdown when a validator is selected */
+.validator-badge {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 6px;
+  padding: 6px 10px;
+  background: rgba(52,211,153,.08);
+  border: 1px solid rgba(52,211,153,.2);
+  border-radius: 6px;
+}
+
+.validator-badge-name {
+  font-family: var(--mono);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--green);
+}
+
+.validator-badge-stake {
+  font-family: var(--mono);
+  font-size: .85rem;
+  color: var(--muted);
+}
+
+/* ── Staking Summary (top of stake tab) ── */
+.staking-summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 12px 14px;
+  background: rgba(52,211,153,.06);
+  border: 1px solid rgba(52,211,153,.15);
+  border-radius: 8px;
+  margin-bottom: 12px;
+}
+
+.staking-summary-row {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.staking-summary-label {
+  font-family: var(--mono);
+  font-size: .6rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.staking-summary-value {
+  font-family: var(--mono);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.staking-summary-value.green {
+  color: var(--green);
+}
+
+/* ── Validator Detail Badge (below dropdown when selected) ── */
+.validator-detail-badge {
+  margin-top: 8px;
+  padding: 10px 12px;
+  background: rgba(52,211,153,.06);
+  border: 1px solid rgba(52,211,153,.2);
+  border-radius: 7px;
+}
+
+.validator-detail-name {
+  font-family: var(--mono);
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--green);
+  margin-bottom: 6px;
+}
+
+.validator-detail-stats {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.validator-detail-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.validator-detail-label {
+  font-family: var(--mono);
+  font-size: .55rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.validator-detail-value {
+  font-family: var(--mono);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.validator-detail-value.green {
+  color: var(--green);
+}
+
+/* ── Recent Addresses Chips ── */
+.recent-addresses {
+  margin-bottom: 10px;
+}
+
+.recent-addresses-label {
+  font-size: .65rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  margin-bottom: 5px;
+}
+
+.recent-addresses-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.recent-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  font-family: var(--mono);
+}
+
+.recent-chip:hover {
+  border-color: var(--green);
+  background: rgba(52,211,153,.06);
+}
+
+.recent-chip.active {
+  border-color: var(--green);
+  background: rgba(52,211,153,.1);
+}
+
+.recent-chip-addr {
+  font-size: .78rem;
+  color: var(--text);
+  font-weight: 500;
+}
+
+.recent-chip-count {
+  font-size: .62rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+/* ── Address Safety Banners (on-chain first-contact detection) ── */
+.address-safety {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  margin-bottom: 10px;
+  font-family: var(--mono);
+  font-size: .82rem;
+  line-height: 1.4;
+}
+
+.address-safety.checking {
+  background: rgba(99,102,241,.08);
+  border: 1px solid rgba(99,102,241,.2);
+  color: var(--muted);
+  font-size: .75rem;
+}
+
+.address-safety.first-contact {
+  background: rgba(245,158,11,.1);
+  border: 1.5px solid rgba(245,158,11,.4);
+  color: #fbbf24;
+}
+
+.address-safety.known {
+  background: rgba(52,211,153,.08);
+  border: 1px solid rgba(52,211,153,.25);
+  color: var(--green);
+}
+
+.address-safety-icon {
+  font-size: 1.2rem;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.address-safety-text {
+  flex: 1;
+}
+
+.address-safety-text strong {
+  font-weight: 700;
+}
+
+.address-safety.first-contact .address-safety-text {
+  color: #fbbf24;
+}
+
+.address-safety.known .address-safety-text {
+  color: var(--green);
+}
+
 .input-group input {
   width: 100%;
-  padding: 8px 10px;
+  padding: 10px 12px;
   border-radius: 7px;
   border: 1px solid var(--border);
   background: var(--bg);
   color: var(--text);
   font-family: var(--mono);
-  font-size: .78rem;
+  font-size: 1.3rem;
+  font-weight: 600;
   outline: none;
   transition: border-color .2s;
 }
@@ -900,6 +1370,92 @@ body {
   animation: scaleIn .35s cubic-bezier(.4,0,.2,1) both;
 }
 
+/* ── Transaction History Panel ── */
+.tx-history-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+  padding: 10px 0;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: .85rem;
+  font-weight: 700;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+}
+
+.tx-history-list {
+  border-top: 1px solid var(--border);
+  margin-top: 6px;
+}
+
+.tx-history-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 4px;
+  border-bottom: 1px solid rgba(255,255,255,.04);
+}
+
+.tx-history-row:last-child {
+  border-bottom: none;
+}
+
+.tx-history-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+  width: 20px;
+  text-align: center;
+}
+
+.tx-history-details {
+  flex: 1;
+  min-width: 0;
+}
+
+.tx-history-type {
+  font-family: var(--mono);
+  font-size: .82rem;
+  font-weight: 700;
+}
+
+.tx-history-amount {
+  font-weight: 600;
+  color: var(--text);
+}
+
+.tx-history-meta {
+  font-family: var(--mono);
+  font-size: .65rem;
+  color: var(--muted);
+  display: flex;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.tx-history-time {
+  color: var(--muted);
+  opacity: .7;
+}
+
+.tx-history-link {
+  font-size: .85rem;
+  color: var(--muted);
+  text-decoration: none;
+  padding: 4px;
+  border-radius: 4px;
+  transition: all 0.15s;
+}
+
+.tx-history-link:hover {
+  color: var(--green);
+  background: rgba(52,211,153,.1);
+}
+
 /* ── Connect Button Pulse ── */
 .btn-connect-pulse {
   position: relative;
@@ -985,14 +1541,15 @@ body {
 
 .delegation-amount {
   font-family: var(--mono);
-  font-size: .65rem;
-  font-weight: 600;
+  font-size: 1.3rem;
+  font-weight: 700;
   color: var(--text);
 }
 
 .delegation-rewards {
   font-family: var(--mono);
-  font-size: .58rem;
+  font-size: 1.15rem;
+  font-weight: 600;
   color: var(--green);
 }
 
