@@ -1602,7 +1602,7 @@ function App() {
                     No transactions loaded
                   </div>
                   <a
-                    href={`https://${network === "mainnet" ? "explorer" : "explorer.testnet-1"}.coreum.dev/coreum/accounts/${ledger.address}`}
+                    href={`${explorerBase}?address=${ledger.address}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{ color: "var(--accent)", fontSize: ".7rem" }}
@@ -1643,7 +1643,7 @@ function App() {
                       </div>
                     </div>
                     <a
-                      href={`https://${network === "mainnet" ? "explorer" : "explorer.testnet-1"}.coreum.dev/coreum/transactions/${tx.txHash}`}
+                      href={`${explorerBase}?tx=${tx.txHash}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="tx-history-link"
