@@ -239,8 +239,16 @@ export function buildClaimRewardsSignDoc(params: {
   signDoc: ReturnType<typeof makeSignDoc>;
   signDocString: string;
 } {
+  // NOTE: Amino type is "MsgWithdrawDelegationReward" (with "Delegation"),
+  // NOT "MsgWithdrawDelegatorReward" (with "Delegator"). This is a historical
+  // wart in cosmos-sdk/x/distribution/types/codec.go — the proto struct was
+  // renamed but the Amino registered name was kept for backward-compat.
+  // Getting this wrong produces a "signature verification failed" error on
+  // broadcast because the chain's reconstructed signDoc bytes won't match
+  // what the Ledger signed. CosmJS's own aminomessages.ts hardcodes the same
+  // mapping. See: https://github.com/cosmos/cosmos-sdk/blob/main/x/distribution/types/codec.go
   const msg: AminoMsg = {
-    type: "cosmos-sdk/MsgWithdrawDelegatorReward",
+    type: "cosmos-sdk/MsgWithdrawDelegationReward",
     value: {
       delegator_address: params.delegatorAddress,
       validator_address: params.validatorAddress,
@@ -292,7 +300,10 @@ export function assembleStakingTxBytes(
         amount: v.amount,
       }),
     },
-    "cosmos-sdk/MsgWithdrawDelegatorReward": {
+    // Amino type "MsgWithdrawDelegationReward" (with "Delegation") maps
+    // back to proto "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward"
+    // (with "Delegator"). See note in buildClaimRewardsSignDoc above.
+    "cosmos-sdk/MsgWithdrawDelegationReward": {
       typeUrl: "/cosmos.distribution.v1beta1.MsgWithdrawDelegatorReward",
       mapValue: (v: any) => ({
         delegatorAddress: v.delegator_address,
