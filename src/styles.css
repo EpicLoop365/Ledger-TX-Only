@@ -955,7 +955,7 @@ body {
 
 .staking-summary-value {
   font-family: var(--mono);
-  font-size: 1rem;
+  font-size: 1.25rem;
   font-weight: 700;
   color: var(--text);
 }
@@ -1889,14 +1889,14 @@ body {
 
 .delegation-amount {
   font-family: var(--mono);
-  font-size: 1rem;
+  font-size: 1.3rem;
   font-weight: 700;
   color: var(--text);
 }
 
 .delegation-rewards {
   font-family: var(--mono);
-  font-size: .85rem;
+  font-size: 1.15rem;
   font-weight: 600;
   color: var(--green);
 }
